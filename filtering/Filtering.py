@@ -2,10 +2,14 @@ from scapy.all import *
 from scapy.all import rdpcap, IP, UDP, DNS, DNSQR
 from scapy.layers.inet import IP, UDP
 from scapy.layers.dns import DNS, DNSQR
+from collections import defaultdict
 import csv
 import sys
+import xxhash
 
-pcap_interact = rdpcap("interact.pcap")
+burst_filter=defaultdict(list)
+cold_filter=defaultdict(list)
+
 def filter_dns_packets(pcap_path):
     """
     从 PCAP 文件中过滤出满足以下条件的 DNS 数据包：
@@ -72,6 +76,21 @@ def safe_get_udp_payload_size(pkt):
     except Exception:
         return 0
     
+def extract_registered_domain(domain):
+    """
+    从完整域名中提取“二级域名.顶级域”
+    示例：www.example.com -> example.com
+          mail.example.co.uk -> example.co.uk  (注意：此处会误判，应为 example.co.uk 但简单方法只取最后两级)
+    """
+    if not domain:
+        return None
+    # 去除末尾可能存在的点
+    domain = domain.rstrip('.')
+    parts = domain.split('.')
+    if len(parts) < 2:
+        return domain  # 无法提取，返回原值
+    # 取最后两部分
+    return '.'.join(parts[-2:])
 def extract_dns_info(packets, output_csv=None):
     """
     从 pcap 文件中提取 DNS 查询/响应的关键信息。
@@ -111,12 +130,16 @@ def extract_dns_info(packets, output_csv=None):
             domain = None
             record_type = None
 
+        #5. 主机端ip
+        client_ip = pkt[IP].src
+
         results.append({
             'Timestamp': timestamp,
             'TTL': ttl,
             'Payload_Size': payload_size,
             'Domain': domain,
-            'Record_Type': record_type
+            'Record_Type': record_type,
+            'Client_IP': client_ip,
         })
 
     # 输出结果
@@ -127,17 +150,53 @@ def extract_dns_info(packets, output_csv=None):
             writer.writerows(results)
         print(f"[✓] 已保存 {len(results)} 条记录到 {output_csv}")
     else:
-        # 控制台打印表格
-        print(f"{'Timestamp':<20} {'TTL':<5} {'Payload_Size':<10} {'Domain':<35} {'Record_Type'}")
-        print("-" * 80)
+        # 打印到控制台，调整列宽
+        print(f"{'Timestamp':<20} {'Client_IP':<16} {'TTL':<5} {'Payload_Size':<10} {'Domain':<35} {'Record_Type'}")
+        print("-" * 95)
         for row in results:
-            print(f"{row['Timestamp']:<20.6f} {row['TTL']:<5} {row['Payload_Size']:<10} {str(row['Domain'])[:35]:<35} {row['Record_Type']}")
+            domain_str = str(row['Domain'])[:35] if row['Domain'] else 'None'
+            print(f"{row['Timestamp']:<20.6f} {row['Client_IP']:<16} {row['TTL']:<5} {row['Payload_Size']:<10} {domain_str:<35} {row['Record_Type']}")
 
     return results
 
+def xxhash32(seed_str: str) -> int:
+    return xxhash.xxh32(seed_str.encode()).intdigest()
+def add_hot_item(dnsinfo):
+    '''
+    将提取好的dns关键信息放入热过滤器中。
+
+    参数：
+        dnsinfo(list):函数extract_dns_info输出的列表的单元
+    '''
+    registered_domain=extract_registered_domain(dnsinfo['Domain'])#提取注册域
+    h = xxhash32(registered_domain)#根据域名提取注册域并计算哈希值
+    l = burst_filter#突发过滤器别名
+    k = h%100 #将哈希值取余得到过滤器引索
+
+    if not l[k]:#如果热过滤器中不存在该哈希值，则将dnsinfo添加到对应的列表中
+        l[k].append(dnsinfo)
+    elif registered_domain == extract_registered_domain(l[k][0]['Domain']):#如果热过滤器中存在该哈希值,且该哈希值对应的注册域与当前dnsinfo的注册域相同，则将dnsinfo添加到对应的列表中
+        l[k].append(dnsinfo)
+    else:#如果热过滤器中存在该哈希值，但二级域名不同，那么通过概率来决定保留哪个，另一个则移交给冷过滤器
+        size = len(l[k]) #读取已有数据的个数
+        if h%size == 0:#1/size的概率成功,将已有的列表交给冷过滤器，用新数据将其覆盖
+            add_cold_item(l[k])
+            l[k].clear
+            l[k].append(dnsinfo)
+    
+    print(f"第{k}现在有{len(l[k])}个数据")
+
+def add_cold_item(dnsinfo):
+    pass
+
+    
+    
+
 if __name__ == "__main__":
     # 替换为实际 PCAP 文件路径
-    pcap_file = "interact.pcap"
+    pcap_file = "filtering/noise.pcapng"
     valid_packets = filter_dns_packets(pcap_file)
     print(f"过滤后得到 {len(valid_packets)} 个有效 DNS 数据包")
-    extract_dns_info(valid_packets)
+    dns_infos = extract_dns_info(valid_packets)
+    for dns_info in dns_infos:
+        add_hot_item(dns_info)
