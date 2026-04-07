@@ -3,6 +3,7 @@ from scapy.all import rdpcap, IP, UDP, DNS, DNSQR
 from scapy.layers.inet import IP, UDP
 from scapy.layers.dns import DNS, DNSQR
 from collections import defaultdict
+from rich import print
 import csv
 import sys
 import xxhash
@@ -10,6 +11,11 @@ import xxhash
 burst_filter=defaultdict(list)
 cold_filter=defaultdict(list)
 BUKET_SIZE = 100
+def default0():
+    return 0
+burst_filter_info=defaultdict(default0) #记录每个桶曾经存储过的最大数据量
+
+
 def filter_dns_packets(pcap_path):
     """
     从 PCAP 文件中过滤出满足以下条件的 DNS 数据包：
@@ -171,26 +177,29 @@ def add_hot_item(dnsinfo):
     registered_domain=extract_registered_domain(dnsinfo['Domain'])#提取注册域
     h = xxhash32(registered_domain)#根据域名提取注册域并计算哈希值
     l = burst_filter#突发过滤器别名
-    k = h%100 #将哈希值取余得到过滤器引索
+    k = h%BUKET_SIZE #将哈希值取余得到过滤器引索
+    c = burst_filter_info #计数列表别名
 
     if not l[k]:#如果热过滤器中不存在该哈希值，则将dnsinfo添加到对应的列表中
         l[k].append(dnsinfo)
+        c[k] += 1
     else:#如果热过滤器中存在该哈希值
         size = len(l[k]) #读取已有数据的个数
         if registered_domain == extract_registered_domain(l[k][0]['Domain']):#如果热过滤器中存在该哈希值,且该哈希值对应的注册域与当前dnsinfo的注册域相同，并且桶尚未到达上限，则将dnsinfo添加到对应的列表中
             if size <= BUKET_SIZE:
                 l[k].append(dnsinfo)
+                c[k] += 1
             else:
                 pass
         else:#如果热过滤器中存在该哈希值，但二级域名不同，那么通过概率来决定保留哪个，另一个则移交给冷过滤器 
-            if h%size == 0:#1/size的概率成功,将已有的列表交给冷过滤器，用新数据将其覆盖
+            if h%c[k] == 0:#1/c[k]的概率成功,将已有的列表交给冷过滤器，用新数据将其覆盖
                 add_cold_item(l[k])
                 l[k].clear
                 l[k].append(dnsinfo)
+                c[k] += 1
             else:#size-1/size的概率失败,将新数据交给冷过滤器
-                add_cold_item(dnsinfo)
+                add_cold_item([dnsinfo])
     
-    print(f"第{k}现在有{len(l[k])}个数据")
 
 def add_cold_item(dnsinfos):
     '''
@@ -200,13 +209,12 @@ def add_cold_item(dnsinfos):
     '''
 
     list = dnsinfos.copy()#复制被淘汰的数据
-    dnsinfo = list[1]
+    dnsinfo = list[0]
     registered_domain=extract_registered_domain(dnsinfo['Domain'])#提取注册域
     h = xxhash32(registered_domain)#根据域名提取注册域并计算哈希值
     l = cold_filter#冷过滤器别名
-    k = h%100 #将哈希值取余得到过滤器引索
 
-    cold_filter[registered_domain].extend(list)#将被淘汰的数据添加到冷过滤器中
+    l[registered_domain].extend(list)#将被淘汰的数据添加到冷过滤器中
     
     
 
@@ -218,3 +226,7 @@ if __name__ == "__main__":
     dns_infos = extract_dns_info(valid_packets)
     for dns_info in dns_infos:
         add_hot_item(dns_info)
+        # print(burst_filter)
+        # print(cold_filter)
+    print(burst_filter)
+    print(cold_filter)
