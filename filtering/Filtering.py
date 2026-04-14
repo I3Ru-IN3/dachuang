@@ -7,6 +7,9 @@ from rich import print
 import csv
 import sys
 import xxhash
+import dns.rdata
+import socket
+from scapy.all import rdpcap, DNSRR
 
 burst_filter=defaultdict(list)
 cold_filter=defaultdict(list)
@@ -15,7 +18,165 @@ def default0():
     return 0
 burst_filter_info=defaultdict(default0) #记录每个桶曾经存储过的最大数据量
 
+def decode_txt_rdata(rdata_bytes):
+    """手动解码 TXT 的 rdata（标准格式：长度+文本，可多段）"""
+    result = []
+    i = 0
+    while i < len(rdata_bytes):
+        length = rdata_bytes[i]
+        i += 1
+        result.append(rdata_bytes[i:i+length].decode())
+        i += length
+    return ' '.join(result)
+def extract_rdata_payload(rr):
+    """
+    从 DNS 资源记录（RR）中提取可读的载荷内容。
+    参数 rr: Scapy 的 DNSRR 对象
+    """
+    rdata = rr.rdata  # 保持原始类型（可能是 bytes 或 str）
 
+    # A 记录
+    if rr.type == 1:
+        if isinstance(rdata, bytes) and len(rdata) == 4:
+            return socket.inet_ntoa(rdata)
+        else:
+            return str(rdata)  # 已经是字符串 IP 或其它
+
+    # AAAA 记录
+    elif rr.type == 28:
+        if isinstance(rdata, bytes) and len(rdata) == 16:
+            return socket.inet_ntop(socket.AF_INET6, rdata)
+        else:
+            return str(rdata)
+
+    # NS, CNAME, PTR (域名)
+    elif rr.type in (2, 5, 12):
+        if isinstance(rdata, bytes):
+            return rdata.decode()
+        else:
+            return str(rdata)
+
+    # MX 记录
+    elif rr.type == 15:
+        if isinstance(rdata, bytes):
+            priority = int.from_bytes(rdata[:2], byteorder='big')
+            domain = rdata[2:].decode()
+            return f"{priority} {domain}"
+        else:
+            return str(rdata)
+
+    # TXT 记录
+    elif rr.type == 16:
+        if hasattr(rr, 'strings'):
+            parts = [s.decode() if isinstance(s, bytes) else str(s) for s in rr.strings]
+            return ' '.join(parts)
+        else:
+            if isinstance(rdata, bytes):
+                return decode_txt_rdata(rdata)
+            else:
+                return str(rdata)
+
+    # SOA 记录（简化处理）
+    elif rr.type == 6:
+        if isinstance(rdata, bytes):
+            return rdata.hex()
+        else:
+            return str(rdata)
+
+    # 其他未知类型
+    else:
+        if isinstance(rdata, bytes):
+            return rdata.hex()
+        else:
+            return str(rdata)
+# def parse_dns_rdata_with_dnspython(scapy_dnsrr):
+#     """
+#     使用 dnspython 将 Scapy DNSRR 对象中的 rdata 解析为结构化数据。
+#     """
+#     try:
+#         # 1. 获取 Scapy 包中的原始数据
+#         record_type = scapy_dnsrr.type  # DNS 记录类型（整数，如 1 表示 A，5 表示 CNAME）
+#         record_class = scapy_dnsrr.rclass  # DNS 记录类（整数，通常是 1 表示 IN）
+#         ttl = scapy_dnsrr.ttl  # TTL 值
+#         raw_rdata = bytes(scapy_dnsrr.rdata)  # 将 rdata 转换为原始字节流
+
+#         # 2. 使用 dnspython 解析
+#         # 注意：dnspython 的 from_wire 需要完整的 DNS 消息，这里只处理 rdata 部分，
+#         # 所以需要手动构建一个简单的消息上下文。对于常见类型，这种方式有效。
+#         # 一个更通用但略复杂的方法涉及 dns.message.from_wire，但上述方法对多数场景足够。
+#         rdata_obj = dns.rdata.from_wire(
+#             record_class,           # 这里直接使用整数
+#             record_type,
+#             raw_rdata,
+#             0,                      # 起始偏移
+#             len(raw_rdata)        # 数据长度
+#         )
+#         return rdata_obj,ttl
+
+
+#     except Exception as e:
+#         print(f"解析 rdata 失败 (Type: {record_type}): {e}")
+#         return None, None
+    
+# def get_rdata_value(rdata_obj, record_type=None):
+#     """
+#     从 dnspython 解析出的 rdata 对象中提取主要载荷值（字符串形式）。
+    
+#     参数:
+#         rdata_obj: dnspython 解析后的对象（如 dns.rdtypes.IN.A.A）。
+#         record_type: 可选，DNS 记录类型整数。如果提供，将用于特殊处理；
+#                      如果不提供，将尝试从 rdata_obj 的 rdtype 属性获取。
+    
+#     返回:
+#         字符串，表示该记录的核心内容（例如 IP 地址、域名、TXT 文本等）。
+#         如果无法提取，返回 str(rdata_obj) 或空字符串。
+#     """
+#     if rdata_obj is None:
+#         return ""
+
+#     # 如果没有显式提供 record_type，尝试从对象中获取
+#     if record_type is None:
+#         if hasattr(rdata_obj, 'rdtype'):
+#             record_type = rdata_obj.rdtype
+#         else:
+#             # 实在无法获取，直接返回字符串形式
+#             return str(rdata_obj)
+
+#     # 根据类型提取最常用的属性
+#     if record_type == dns.rdatatype.A:          # 1
+#         return getattr(rdata_obj, 'address', '')
+#     elif record_type == dns.rdatatype.AAAA:     # 28
+#         return getattr(rdata_obj, 'address', '')
+#     elif record_type == dns.rdatatype.CNAME:    # 5
+#         return str(getattr(rdata_obj, 'target', ''))
+#     elif record_type == dns.rdatatype.NS:       # 2
+#         return str(getattr(rdata_obj, 'target', ''))
+#     elif record_type == dns.rdatatype.PTR:      # 12
+#         return str(getattr(rdata_obj, 'target', ''))
+#     elif record_type == dns.rdatatype.MX:       # 15
+#         exchange = getattr(rdata_obj, 'exchange', None)
+#         pref = getattr(rdata_obj, 'preference', None)
+#         if exchange:
+#             return f"{pref} {exchange}" if pref is not None else str(exchange)
+#         return ''
+#     elif record_type == dns.rdatatype.TXT:      # 16
+#         strings = getattr(rdata_obj, 'strings', ())
+#         # 将多个字符串连接成一个字符串（通常 TXT 可能包含多个片段）
+#         return ''.join(s.decode() if isinstance(s, bytes) else str(s) for s in strings)
+#     elif record_type == dns.rdatatype.SOA:      # 6
+#         mname = getattr(rdata_obj, 'mname', '')
+#         rname = getattr(rdata_obj, 'rname', '')
+#         serial = getattr(rdata_obj, 'serial', '')
+#         return f"{mname} {rname} {serial}"
+#     elif record_type == dns.rdatatype.SRV:      # 33
+#         target = getattr(rdata_obj, 'target', '')
+#         port = getattr(rdata_obj, 'port', '')
+#         priority = getattr(rdata_obj, 'priority', '')
+#         weight = getattr(rdata_obj, 'weight', '')
+#         return f"{priority} {weight} {port} {target}"
+#     else:
+#         # 未知类型：返回字符串表示
+#         return str(rdata_obj)
 def filter_dns_packets(pcap_path):
     """
     从 PCAP 文件中过滤出满足以下条件的 DNS 数据包：
@@ -37,7 +198,7 @@ def filter_dns_packets(pcap_path):
     
     for p in packets:
         # 检查是否包含 IP、UDP 和 DNS 层
-        if IP in p and UDP in p and DNS in p:
+        if IP in p and UDP in p and DNS in p and p[DNS].an:  # 确保存在问题段
             dns_layer = p[DNS]
             
             # 检查 QR 标志有效（DNS 标准中 QR 为 0 或 1，此处仅需字段存在）
@@ -117,10 +278,16 @@ def extract_dns_info(packets, output_csv=None):
 
         # 1. 时间戳 (秒，从 epoch 开始)
         timestamp = pkt.time
-
-        # 2. IP 层的 TTL
-        ttl = pkt[IP].ttl
-
+        # 2. 提取 有效载荷 与 DNS缓存中的 TTL
+        dns_layer = pkt[DNS]
+        ttl = None
+        rdata_value = None
+        if dns_layer.an:                     # 存在 Answer 记录
+            ans = dns_layer.an[0] if isinstance(dns_layer.an, list) else dns_layer.an#提取answer记录
+            if hasattr(ans, 'ttl'):
+                ttl = ans.ttl
+            # 提取载荷
+            rdata_value = extract_rdata_payload(ans)
         # 3. 有效载荷大小：UDP 负载的长度（即 DNS 消息长度）
         payload_size = safe_get_udp_payload_size(pkt)
 
@@ -146,6 +313,7 @@ def extract_dns_info(packets, output_csv=None):
             'Domain': domain,
             'Record_Type': record_type,
             'Client_IP': client_ip,
+            'RData': rdata_value,
         })
 
     # 输出结果
@@ -157,11 +325,11 @@ def extract_dns_info(packets, output_csv=None):
         print(f"[✓] 已保存 {len(results)} 条记录到 {output_csv}")
     else:
         # 打印到控制台，调整列宽
-        print(f"{'Timestamp':<20} {'Client_IP':<16} {'TTL':<5} {'Payload_Size':<10} {'Domain':<35} {'Record_Type'}")
+        print(f"{'Timestamp':<20} {'Client_IP':<16} {'TTL':<5} {'Payload_Size':<10} {'Domain':<35} {'Record_Type'}{'RData'}")
         print("-" * 95)
         for row in results:
             domain_str = str(row['Domain'])[:35] if row['Domain'] else 'None'
-            print(f"{row['Timestamp']:<20.6f} {row['Client_IP']:<16} {row['TTL']:<5} {row['Payload_Size']:<10} {domain_str:<35} {row['Record_Type']}")
+            print(f"{row['Timestamp']:<20.6f} {row['Client_IP']:<16} {row['TTL']:<5} {row['Payload_Size']:<10} {domain_str:<35} {row['Record_Type']}{row['RData']}")
 
     return results
 
