@@ -15,15 +15,13 @@ MALICIOUS_DOMAINS = {
     "ad-tracker.net",
     "fake-bank.com"
 }
-
 # 加载机器学习模型
 try:
     ML_MODEL = joblib.load('dns_malware_model.pkl')
     print("机器学习模型加载成功")
 except FileNotFoundError:
-    print("警告：机器学习模型文件不存在，将使用传统检测方法")
+    print("机器学习模型文件不存在。")
     ML_MODEL = None
-
 # 域名特征提取函数（与机器学习模型保持一致）
 def extract_features(domain):
     features = {}
@@ -39,7 +37,105 @@ def extract_features(domain):
     features['has_long_random'] = 1 if re.search(r'[a-z0-9]{15,}', domain) else 0
     # 是否包含国际化域名标记
     features['has_idn'] = 1 if 'xn--' in domain else 0
+    
+    # DNS隐蔽信道特征
+    # 1. 编码特征检测
+    features['is_base64'] = 1 if is_base64_encoded(domain) else 0
+    features['is_hex_encoded'] = 1 if is_hex_encoded(domain) else 0
+    
+    # 2. 域名结构特征
+    features['avg_subdomain_length'] = calculate_avg_subdomain_length(domain)
+    features['max_subdomain_length'] = calculate_max_subdomain_length(domain)
+    
+    # 3. 熵值（衡量随机性）
+    features['domain_entropy'] = calculate_entropy(domain)
+    
+    # 4. 特殊模式检测
+    features['has_repeated_patterns'] = 1 if has_repeated_patterns(domain) else 0
+    features['has_consecutive_chars'] = 1 if has_consecutive_chars(domain) else 0
+    
     return features
+
+# 检测Base64编码
+def is_base64_encoded(domain):
+    # 移除点号后检查是否符合Base64编码特征
+    clean_domain = domain.replace('.', '')
+    # Base64编码通常只包含A-Z, a-z, 0-9, +, /
+    base64_pattern = re.compile(r'^[A-Za-z0-9+/]+=*$')
+    return bool(base64_pattern.match(clean_domain))
+
+# 检测十六进制编码
+def is_hex_encoded(domain):
+    # 移除点号后检查是否全为十六进制字符
+    clean_domain = domain.replace('.', '')
+    hex_pattern = re.compile(r'^[0-9a-fA-F]+$')
+    return bool(hex_pattern.match(clean_domain)) and len(clean_domain) >= 8
+
+# 计算平均子域名长度
+def calculate_avg_subdomain_length(domain):
+    parts = domain.split('.')
+    if len(parts) <= 1:
+        return 0
+    lengths = [len(part) for part in parts[:-1]]  # 排除顶级域名
+    return sum(lengths) / len(lengths) if lengths else 0
+
+# 计算最大子域名长度
+def calculate_max_subdomain_length(domain):
+    parts = domain.split('.')
+    if len(parts) <= 1:
+        return 0
+    lengths = [len(part) for part in parts[:-1]]  # 排除顶级域名
+    return max(lengths) if lengths else 0
+
+# 计算域名熵值（衡量随机性）
+def calculate_entropy(domain):
+    import math
+    clean_domain = domain.replace('.', '')
+    if not clean_domain:
+        return 0
+    
+    # 计算字符频率
+    freq = {}
+    for char in clean_domain:
+        freq[char] = freq.get(char, 0) + 1
+    
+    # 计算熵值
+    entropy = 0
+    for count in freq.values():
+        probability = count / len(clean_domain)
+        entropy -= probability * math.log2(probability)
+    
+    return entropy
+
+# 检测重复模式
+def has_repeated_patterns(domain):
+    # 检测是否有重复的子域名模式
+    parts = domain.split('.')
+    if len(parts) < 3:
+        return False
+    
+    # 检查是否有重复的子域名
+    seen = set()
+    for part in parts[:-1]:
+        if part in seen:
+            return True
+        seen.add(part)
+    
+    # 检查是否有重复的字符模式
+    for i in range(len(domain) - 3):
+        pattern = domain[i:i+3]
+        if domain.count(pattern) > 1:
+            return True
+    
+    return False
+
+# 检测连续字符
+def has_consecutive_chars(domain):
+    # 检测是否有连续的相同字符
+    for i in range(len(domain) - 2):
+        if domain[i] == domain[i+1] == domain[i+2]:
+            return True
+    return False
 
 # 使用机器学习模型预测
 def predict_with_ml(domain):
@@ -49,7 +145,9 @@ def predict_with_ml(domain):
     # 提取特征
     feat = extract_features(domain)
     feat_df = pd.DataFrame([feat])
-    numeric_features = ['length', 'digit_ratio', 'special_chars', 'subdomains', 'has_long_random', 'has_idn']
+    numeric_features = ['length', 'digit_ratio', 'special_chars', 'subdomains', 'has_long_random', 'has_idn',
+                       'is_base64', 'is_hex_encoded', 'avg_subdomain_length', 'max_subdomain_length',
+                       'domain_entropy', 'has_repeated_patterns', 'has_consecutive_chars']
     feat_df = feat_df[numeric_features]
     
     # 预测
