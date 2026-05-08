@@ -2,6 +2,7 @@ from scapy.all import *
 from scapy.all import rdpcap, IP, UDP, DNS, DNSQR
 from scapy.layers.inet import IP, UDP
 from scapy.layers.dns import DNS, DNSQR
+from itertools import groupby
 from collections import defaultdict
 from rich import print
 import csv
@@ -89,94 +90,7 @@ def extract_rdata_payload(rr):
             return rdata.hex()
         else:
             return str(rdata)
-# def parse_dns_rdata_with_dnspython(scapy_dnsrr):
-#     """
-#     使用 dnspython 将 Scapy DNSRR 对象中的 rdata 解析为结构化数据。
-#     """
-#     try:
-#         # 1. 获取 Scapy 包中的原始数据
-#         record_type = scapy_dnsrr.type  # DNS 记录类型（整数，如 1 表示 A，5 表示 CNAME）
-#         record_class = scapy_dnsrr.rclass  # DNS 记录类（整数，通常是 1 表示 IN）
-#         ttl = scapy_dnsrr.ttl  # TTL 值
-#         raw_rdata = bytes(scapy_dnsrr.rdata)  # 将 rdata 转换为原始字节流
 
-#         # 2. 使用 dnspython 解析
-#         # 注意：dnspython 的 from_wire 需要完整的 DNS 消息，这里只处理 rdata 部分，
-#         # 所以需要手动构建一个简单的消息上下文。对于常见类型，这种方式有效。
-#         # 一个更通用但略复杂的方法涉及 dns.message.from_wire，但上述方法对多数场景足够。
-#         rdata_obj = dns.rdata.from_wire(
-#             record_class,           # 这里直接使用整数
-#             record_type,
-#             raw_rdata,
-#             0,                      # 起始偏移
-#             len(raw_rdata)        # 数据长度
-#         )
-#         return rdata_obj,ttl
-
-
-#     except Exception as e:
-#         print(f"解析 rdata 失败 (Type: {record_type}): {e}")
-#         return None, None
-    
-# def get_rdata_value(rdata_obj, record_type=None):
-#     """
-#     从 dnspython 解析出的 rdata 对象中提取主要载荷值（字符串形式）。
-    
-#     参数:
-#         rdata_obj: dnspython 解析后的对象（如 dns.rdtypes.IN.A.A）。
-#         record_type: 可选，DNS 记录类型整数。如果提供，将用于特殊处理；
-#                      如果不提供，将尝试从 rdata_obj 的 rdtype 属性获取。
-    
-#     返回:
-#         字符串，表示该记录的核心内容（例如 IP 地址、域名、TXT 文本等）。
-#         如果无法提取，返回 str(rdata_obj) 或空字符串。
-#     """
-#     if rdata_obj is None:
-#         return ""
-
-#     # 如果没有显式提供 record_type，尝试从对象中获取
-#     if record_type is None:
-#         if hasattr(rdata_obj, 'rdtype'):
-#             record_type = rdata_obj.rdtype
-#         else:
-#             # 实在无法获取，直接返回字符串形式
-#             return str(rdata_obj)
-
-#     # 根据类型提取最常用的属性
-#     if record_type == dns.rdatatype.A:          # 1
-#         return getattr(rdata_obj, 'address', '')
-#     elif record_type == dns.rdatatype.AAAA:     # 28
-#         return getattr(rdata_obj, 'address', '')
-#     elif record_type == dns.rdatatype.CNAME:    # 5
-#         return str(getattr(rdata_obj, 'target', ''))
-#     elif record_type == dns.rdatatype.NS:       # 2
-#         return str(getattr(rdata_obj, 'target', ''))
-#     elif record_type == dns.rdatatype.PTR:      # 12
-#         return str(getattr(rdata_obj, 'target', ''))
-#     elif record_type == dns.rdatatype.MX:       # 15
-#         exchange = getattr(rdata_obj, 'exchange', None)
-#         pref = getattr(rdata_obj, 'preference', None)
-#         if exchange:
-#             return f"{pref} {exchange}" if pref is not None else str(exchange)
-#         return ''
-#     elif record_type == dns.rdatatype.TXT:      # 16
-#         strings = getattr(rdata_obj, 'strings', ())
-#         # 将多个字符串连接成一个字符串（通常 TXT 可能包含多个片段）
-#         return ''.join(s.decode() if isinstance(s, bytes) else str(s) for s in strings)
-#     elif record_type == dns.rdatatype.SOA:      # 6
-#         mname = getattr(rdata_obj, 'mname', '')
-#         rname = getattr(rdata_obj, 'rname', '')
-#         serial = getattr(rdata_obj, 'serial', '')
-#         return f"{mname} {rname} {serial}"
-#     elif record_type == dns.rdatatype.SRV:      # 33
-#         target = getattr(rdata_obj, 'target', '')
-#         port = getattr(rdata_obj, 'port', '')
-#         priority = getattr(rdata_obj, 'priority', '')
-#         weight = getattr(rdata_obj, 'weight', '')
-#         return f"{priority} {weight} {port} {target}"
-#     else:
-#         # 未知类型：返回字符串表示
-#         return str(rdata_obj)
 def filter_dns_packets(pcap_path):
     """
     从 PCAP 文件中过滤出满足以下条件的 DNS 数据包：
@@ -299,6 +213,7 @@ def extract_dns_info(packets, output_csv=None):
             # 域名可能是 bytes 类型，需要解码为字符串
             domain = question.qname.decode() if isinstance(question.qname, bytes) else str(question.qname)
             record_type = question.qtype      # 数字格式，如 1=A, 28=AAAA
+            registered_domain = extract_registered_domain(domain)  # 提取注册域
         else:
             domain = None
             record_type = None
@@ -311,6 +226,7 @@ def extract_dns_info(packets, output_csv=None):
             'TTL': ttl,
             'Payload_Size': payload_size,
             'Domain': domain,
+            'Registered_Domain': registered_domain,
             'Record_Type': record_type,
             'Client_IP': client_ip,
             'RData': rdata_value,
@@ -335,38 +251,40 @@ def extract_dns_info(packets, output_csv=None):
 
 def xxhash32(seed_str: str) -> int:
     return xxhash.xxh32(seed_str.encode()).intdigest()
-def add_hot_item(dnsinfo):
+def add_hot_item(registered_domain,dnsinfos):
     '''
     将提取好的dns关键信息放入热过滤器中。
 
     参数：
-        dnsinfo(list):函数extract_dns_info输出的列表的单元
+        registered_domain(str):从域名中提取的注册域
+        dnsinfos(list):dnsinfo的列表，包含了同一注册域的多个dns信息
     '''
-    registered_domain=extract_registered_domain(dnsinfo['Domain'])#提取注册域
     h = xxhash32(registered_domain)#根据域名提取注册域并计算哈希值
     l = burst_filter#突发过滤器别名
     k = h%BUKET_SIZE #将哈希值取余得到过滤器引索
     c = burst_filter_info #计数列表别名
+    size_of_dnsinfos = len(dnsinfos) #当前dnsinfo的个数
 
     if not l[k]:#如果热过滤器中不存在该哈希值，则将dnsinfo添加到对应的列表中
-        l[k].append(dnsinfo)
-        c[k] += 1
-    else:#如果热过滤器中存在该哈希值
-        size = len(l[k]) #读取已有数据的个数
-        if registered_domain == extract_registered_domain(l[k][0]['Domain']):#如果热过滤器中存在该哈希值,且该哈希值对应的注册域与当前dnsinfo的注册域相同，并且桶尚未到达上限，则将dnsinfo添加到对应的列表中
-            if size <= BUKET_SIZE:
-                l[k].append(dnsinfo)
-                c[k] += 1
-            else:
-                pass
-        else:#如果热过滤器中存在该哈希值，但二级域名不同，那么通过概率来决定保留哪个，另一个则移交给冷过滤器 
-            if h%c[k] == 0:#1/c[k]的概率成功,将已有的列表交给冷过滤器，用新数据将其覆盖
-                add_cold_item(l[k])
-                l[k].clear
-                l[k].append(dnsinfo)
-                c[k] += 1
-            else:#size-1/size的概率失败,将新数据交给冷过滤器
-                add_cold_item([dnsinfo])
+        l[k].extend(dnsinfos)#将dnsinfos添加到热过滤器中
+        c[k] += size_of_dnsinfos#更新该哈希值对应的计数器，记录当前桶中数据的个数
+        return
+    
+    size = len(l[k]) #读取已有数据的个数
+    if registered_domain == extract_registered_domain(l[k][0]['Registered_Domain']):#如果热过滤器中存在该哈希值,且该哈希值对应的注册域与当前dnsinfo的注册域相同，并且桶尚未到达上限，则将dnsinfo添加到对应的列表中
+        if size <= BUKET_SIZE:
+            l[k].extend(dnsinfos)
+            c[k] += size_of_dnsinfos
+        else:
+            pass
+    else:#如果热过滤器中存在该哈希值，但二级域名不同，那么通过概率来决定保留哪个，另一个则移交给冷过滤器 
+        if h%c[k] == 0:#1/c[k]的概率成功,将已有的列表交给冷过滤器，用新数据将其覆盖
+            add_cold_item(l[k])
+            l[k].clear
+            l[k].extend(dnsinfos)
+            c[k] += size_of_dnsinfos
+        else:#size-1/size的概率失败,将新数据交给冷过滤器
+            add_cold_item(dnsinfos)
     
 
 def add_cold_item(dnsinfos):
@@ -389,11 +307,28 @@ def add_cold_item(dnsinfos):
 if __name__ == "__main__":
     # 替换为实际 PCAP 文件路径
     pcap_file = "filtering/noise.pcapng"
-    valid_packets = filter_dns_packets(pcap_file)
+
+    valid_packets = filter_dns_packets(pcap_file)#过滤出有效的DNS数据包
     print(f"过滤后得到 {len(valid_packets)} 个有效 DNS 数据包")
-    dns_infos = extract_dns_info(valid_packets)
+    dns_infos = extract_dns_info(valid_packets)#筛选出dns数据信息
+
+    count = 0
+    group = []
     for dns_info in dns_infos:
-        add_hot_item(dns_info)
+        count += 1
+        group.append(dns_info)#以（注册域，dnsinfo）的形式将数据添加到group中
+        if count == 1000:#每1000条数据为一组，进行一次过滤器的更新
+            count = 0
+            group.sort(key=lambda x: x['Registered_Domain'])#对每组数据按照域名进行排序，保证同一注册域的数据在一起
+            for registered_domain,dns_info_group in groupby(group, key=lambda x: x['Registered_Domain']):
+                add_hot_item(registered_domain,dns_info_group)#注册域与dns信息组传入add_hot_item函数进行过滤器更新
+            group.clear()#清空group，为下一组数据做准备
+
+    if group:#处理最后一组数据
+        group.sort(key=lambda x: x['Registered_Domain'])#对每组数据按照域名进行排序，保证同一注册域的数据在一起
+        for registered_domain,dns_info_group in groupby(group, key=lambda x: x['Registered_Domain']):
+            add_hot_item(registered_domain,list(dns_info_group))#注册域与dns信息组传入add_hot_item函数进行过滤器更新
+        group.clear()#清空group
         # print(burst_filter)
         # print(cold_filter)
     print(burst_filter)
