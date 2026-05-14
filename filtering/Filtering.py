@@ -303,6 +303,16 @@ def add_cold_item(dnsinfos):
     l[registered_domain].extend(list)#将被淘汰的数据添加到冷过滤器中
     
     
+def add_group_to_filters(group):
+    '''
+    将dnsinfo列表通过group分组后添加到过滤器中。
+    参数：
+        group(list):dnsinfo列表
+    '''
+    group.sort(key=lambda x: x['Registered_Domain'])#对每组数据按照域名进行排序，保证同一注册域的数据在一起
+    for registered_domain,dns_info_group in groupby(group, key=lambda x: x['Registered_Domain']):
+        add_hot_item(registered_domain,list(dns_info_group))#注册域与dns信息组传入add_hot_item函数进行过滤器更新
+
 
 if __name__ == "__main__":
     # 替换为实际 PCAP 文件路径
@@ -319,17 +329,14 @@ if __name__ == "__main__":
         group.append(dns_info)#以（注册域，dnsinfo）的形式将数据添加到group中
         if count == 1000:#每1000条数据为一组，进行一次过滤器的更新
             count = 0
-            group.sort(key=lambda x: x['Registered_Domain'])#对每组数据按照域名进行排序，保证同一注册域的数据在一起
-            for registered_domain,dns_info_group in groupby(group, key=lambda x: x['Registered_Domain']):
-                add_hot_item(registered_domain,dns_info_group)#注册域与dns信息组传入add_hot_item函数进行过滤器更新
+            add_group_to_filters(group)#将group列表添加到过滤器中
             group.clear()#清空group，为下一组数据做准备
 
     if group:#处理最后一组数据
-        group.sort(key=lambda x: x['Registered_Domain'])#对每组数据按照域名进行排序，保证同一注册域的数据在一起
-        for registered_domain,dns_info_group in groupby(group, key=lambda x: x['Registered_Domain']):
-            add_hot_item(registered_domain,list(dns_info_group))#注册域与dns信息组传入add_hot_item函数进行过滤器更新
+        add_group_to_filters(group)#将group列表添加到过滤器中
         group.clear()#清空group
-        # print(burst_filter)
-        # print(cold_filter)
+
+    # print(burst_filter)
+    # print(cold_filter)
     print(burst_filter)
     print(cold_filter)
