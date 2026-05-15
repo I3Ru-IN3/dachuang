@@ -7,7 +7,6 @@ from datetime import datetime
 from scapy.all import rdpcap, DNS
 import joblib
 import pandas as pd
-
 MALICIOUS_DOMAINS = {
     "malware-test.com",
     "phishing-example.org",
@@ -16,11 +15,45 @@ MALICIOUS_DOMAINS = {
     "ad-tracker.net",
     "fake-bank.com"
 }
-
 # 频率异常检测配置
 FREQUENCY_THRESHOLD = 10  # 短时间高频次阈值（次/分钟）
 BURST_THRESHOLD = 5        # 突发访问阈值（次/秒）
-IDLE_BURST_THRESHOLD = 3   # 空闲时突发阈值（次/分钟，在检测到用户未使用电脑时）
+IDLE_BURST_THRESHOLD = 3   # 空闲时突发阈值（次/分钟，用户未使用电脑时）
+# 高危域名黑名单
+HIGH_RISK_DOMAINS = {
+    # 已知恶意软件域名
+    "zeusbot.com", "conficker.com", "wannacry-ransomware.net", "emotet-malware.com",
+    "cobaltstrike.cc", "metasploit.cn", "meterpreter.net",
+    # DNS隧道工具常见域名
+    "dns-tunnel.com", "iodine-tunnel.org", "dnscat2.net", "tunnelshell.io",
+    # 钓鱼仿冒域名
+    "fake-microsoft-login.com", "apple-id-verify.net", "paypal-secure.cc",
+    # 挖矿木马域名
+    "cryptominer-pool.org", "coinhive.com", "javascript-miner.net",
+    # 数据外泄相关
+    "dataleak-suspicious.net", "exfiltration-domain.com", "c2-panel.org"
+}
+# 冷门域名检测阈值
+COLD_DOMAIN_ACCESS_COUNT = 3   # 访问次数低于此值视为冷门域名
+COLD_DOMAIN_TOTAL_THRESHOLD = 0.3  # 冷门域名占总访问比例超过此值视为异常
+#顶级域名白名单（正常域名后缀）
+SAFE_TLDS = {
+    '.com', '.org', '.net', '.edu', '.gov', '.mil',
+    '.cn', '.jp', '.de', '.uk', '.fr', '.ru', '.br',
+    '.io', '.co', '.info', '.biz', '.tv', '.cc'
+}
+
+# 内网IP范围
+INTERNAL_IP_RANGES = [
+    ('10.0.0.0', '10.255.255.255'),
+    ('172.16.0.0', '172.31.255.255'),
+    ('192.168.0.0', '192.168.255.255'),
+]
+# 已知恶意IP列表
+MALICIOUS_IPS = {
+    '192.168.1.100', '10.0.0.100', '172.16.0.50',
+    '45.33.32.156', '91.189.92.10', '185.199.108.153'
+}
 
 try:
     ML_MODEL = joblib.load('dns_malware_model.pkl')
@@ -28,14 +61,13 @@ try:
 except FileNotFoundError:
     print("机器学习模型文件不存在。")
     ML_MODEL = None
-
 # 频率异常检测函数
 def detect_frequency_anomaly(dns_data, is_user_active=True):
     """
     检测DNS查询频率异常
-    :param dns_data: DNS记录列表，每条记录包含 timestamp 字段
-    :param is_user_active: 用户是否正在使用电脑
-    :return: 异常检测结果
+    param dns_data: DNS记录列表，每条记录包含 timestamp 字段
+    param is_user_active: 用户是否正在使用电脑
+    return 异常检测结果
     """
     result = {
         'has_anomaly': False,
@@ -43,11 +75,9 @@ def detect_frequency_anomaly(dns_data, is_user_active=True):
         'details': {},
         'suspicious_domains': []
     }
-    
     if not dns_data or len(dns_data) < 2:
         return result
-    
-    # 提取时间戳
+    # 提取时间戳和域名列表
     timestamps = []
     domains = []
     for item in dns_data:
@@ -58,16 +88,12 @@ def detect_frequency_anomaly(dns_data, is_user_active=True):
     
     if len(timestamps) < 2:
         return result
-    
     timestamps.sort()
     duration = timestamps[-1] - timestamps[0]
-    
     if duration <= 0:
         return result
-    
-    # 计算查询频率（次/分钟）
+    #计算查询频率（次/分钟）
     frequency = len(timestamps) / (duration / 60)
-    
     #1短时间高频次检测
     if frequency > FREQUENCY_THRESHOLD:
         result['has_anomaly'] = True
@@ -96,7 +122,7 @@ def detect_frequency_anomaly(dns_data, is_user_active=True):
     
     #3空闲时段异常检测（用户未使用电脑时却有高频访问）
     if not is_user_active and frequency > IDLE_BURST_THRESHOLD:
-        result['has_anomaly'] = True
+        result['has_anomaly']=True
         result['anomaly_type'] = '空闲异常'
         result['details'] = {
             'frequency': round(frequency, 2),
@@ -104,7 +130,7 @@ def detect_frequency_anomaly(dns_data, is_user_active=True):
             'warning': '用户未使用电脑时检测到高频DNS访问，可能存在后台恶意软件'
         }
     
-    # 收集高频访问的域名
+    #收集高频访问的域名
     if result['has_anomaly']:
         domain_counts = {}
         for domain in domains:
@@ -112,6 +138,198 @@ def detect_frequency_anomaly(dns_data, is_user_active=True):
         # 返回访问次数最多的域名
         sorted_domains = sorted(domain_counts.items(), key=lambda x: x[1], reverse=True)
         result['suspicious_domains'] = sorted_domains[:5]
+    return result
+
+# 访问对象异常检测函数
+def detect_access_pattern_anomaly(dns_data):
+    """
+    检测访问对象异常：冷门域名、高危域名、异常TLD等
+    param dns_data: DNS记录列表，每条记录包含 domain 字段
+    return 异常检测结果
+    """
+    result = {
+        'has_anomaly': False,
+        'anomaly_types': [],
+        'high_risk_domains': [],
+        'cold_domains': [],
+        'suspicious_tld_domains': [],
+        'details': {}
+    }
+    
+    if not dns_data:
+        return result
+    
+    #提取域名列表
+    domains = []
+    for item in dns_data:
+        if isinstance(item, dict) and 'domain' in item:
+            domains.append(item['domain'])
+        elif isinstance(item, str):
+            domains.append(item)
+    
+    if not domains:
+        return result
+    
+    # 统计各域名访问次数
+    domain_counts = {}
+    for domain in domains:
+        domain_counts[domain] = domain_counts.get(domain, 0) + 1
+    total_access = len(domains)
+    unique_domains = len(domain_counts)
+    #1高危域名检测
+    high_risk_found = []
+    for domain in domain_counts.keys():
+        if domain in HIGH_RISK_DOMAINS:
+            high_risk_found.append({
+                'domain': domain,
+                'access_count': domain_counts[domain],
+                'reason': '命中高危域名黑名单'
+            })
+    if high_risk_found:
+        result['has_anomaly'] = True
+        result['anomaly_types'].append('高危域名')
+        result['high_risk_domains'] = high_risk_found
+        result['details']['high_risk_count'] = len(high_risk_found)
+    #2冷门域名检测（访问量少的域名占比过高）
+    cold_domains = []
+    for domain, count in domain_counts.items():
+        if count <= COLD_DOMAIN_ACCESS_COUNT:
+            cold_domains.append({
+                'domain': domain,
+                'access_count': count,
+                'reason': f'冷门域名（仅访问{count}次）'
+            })
+    cold_domain_ratio = len(cold_domains) / unique_domains if unique_domains > 0 else 0
+    if cold_domain_ratio > COLD_DOMAIN_TOTAL_THRESHOLD:
+        result['has_anomaly'] = True
+        result['anomaly_types'].append('冷门域名占比过高')
+        result['cold_domains'] = cold_domains[:10]  # 最多返回10个
+        result['details']['cold_domain_ratio'] = round(cold_domain_ratio, 2)
+        result['details']['cold_domain_count'] = len(cold_domains)
+        result['details']['total_unique_domains'] = unique_domains
+    #3异常TLD检测（使用不常见顶级域名的域名）
+    suspicious_tld = []
+    for domain in domain_counts.keys():
+        has_safe_tld = any(domain.endswith(tld) for tld in SAFE_TLDS)
+        if not has_safe_tld and domain.count('.') >= 1:
+            # 提取TLD
+            tld = '.' + domain.split('.')[-1]
+            suspicious_tld.append({
+                'domain': domain,
+                'tld': tld,
+                'access_count': domain_counts[domain],
+                'reason': f'使用异常顶级域名 {tld}'
+            })
+    
+    if suspicious_tld:
+        result['has_anomaly'] = True
+        result['anomaly_types'].append('异常TLD')
+        result['suspicious_tld_domains'] = suspicious_tld[:10]
+        result['details']['suspicious_tld_count'] = len(suspicious_tld)
+    
+    return result
+
+# 响应异常检测函数
+def detect_response_anomaly(dns_data):
+    """
+    检测DNS响应异常：域名不存在、返回内网IP、恶意IP等
+    param dns_data: DNS记录列表，每条记录包含 domain 和 response 字段
+    return 异常检测结果
+    """
+    result = {
+        'has_anomaly': False,
+        'anomaly_types': [],
+        'non_existent_domains': [],
+        'internal_ip_responses': [],
+        'malicious_ip_responses': [],
+        'details': {}
+    }
+    
+    if not dns_data:
+        return result
+    
+    # 辅助函数：判断IP是否为内网IP
+    def is_internal_ip(ip):
+        try:
+            ip_parts = list(map(int, ip.split('.')))
+            for start, end in INTERNAL_IP_RANGES:
+                start_parts = list(map(int, start.split('.')))
+                end_parts = list(map(int, end.split('.')))
+                if all(start_parts[i] <= ip_parts[i] <= end_parts[i] for i in range(4)):
+                    return True
+            return False
+        except:
+            return False
+    
+    # 辅助函数：验证域名是否存在（通过socket解析）
+    def domain_exists(domain):
+        try:
+            socket.gethostbyname(domain)
+            return True
+        except socket.gaierror:
+            return False
+    
+    non_existent_count = 0
+    internal_ip_count = 0
+    malicious_ip_count = 0
+    
+    for item in dns_data:
+        if isinstance(item, dict):
+            domain = item.get('domain', '')
+            response = item.get('response', '')
+            
+            #1检测域名不存在的响应
+            if domain and response and 'NXDOMAIN' in response.upper():
+                non_existent_count += 1
+                if domain not in [d['domain'] for d in result['non_existent_domains']]:
+                    result['non_existent_domains'].append({
+                        'domain': domain,
+                        'response': response,
+                        'reason': '域名不存在(NXDOMAIN)'
+                    })
+            
+            #2检测返回内网IP
+            if response:
+                # 提取IP地址
+                import re
+                ip_pattern = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
+                ips = ip_pattern.findall(response)
+                for ip in ips:
+                    if is_internal_ip(ip):
+                        internal_ip_count += 1
+                        if domain not in [d['domain'] for d in result['internal_ip_responses']]:
+                            result['internal_ip_responses'].append({
+                                'domain': domain,
+                                'ip': ip,
+                                'reason': 'DNS响应返回内网IP'
+                            })
+                
+                #3检测返回恶意IP
+                for ip in ips:
+                    if ip in MALICIOUS_IPS:
+                        malicious_ip_count += 1
+                        if domain not in [d['domain'] for d in result['malicious_ip_responses']]:
+                            result['malicious_ip_responses'].append({
+                                'domain': domain,
+                                'ip': ip,
+                                'reason': 'DNS响应返回已知恶意IP'
+                            })
+    
+    # 设置异常结果
+    if non_existent_count > 0:
+        result['has_anomaly'] = True
+        result['anomaly_types'].append('域名不存在')
+        result['details']['non_existent_count'] = non_existent_count
+    
+    if internal_ip_count > 0:
+        result['has_anomaly'] = True
+        result['anomaly_types'].append('返回内网IP')
+        result['details']['internal_ip_count'] = internal_ip_count
+    
+    if malicious_ip_count > 0:
+        result['has_anomaly'] = True
+        result['anomaly_types'].append('返回恶意IP')
+        result['details']['malicious_ip_count'] = malicious_ip_count
     
     return result
 
@@ -215,7 +433,6 @@ SUSPICIOUS_PATTERNS = [
     re.compile(r'\.work$'),
     re.compile(r'\.club$')
 ]
-
 def check_dns_record(domain: str) -> dict:
     result = {
         "domain": domain,
@@ -362,7 +579,7 @@ if __name__ == "__main__":
     print("正在进行频率异常检测...")
     freq_result = detect_frequency_anomaly(dns_records)
     if freq_result['has_anomaly']:
-        print(f"\n 频率异常检测告警：")
+        print(f"\n频率异常检测告警：")
         print(f"   异常类型：{freq_result['anomaly_type']}")
         print(f"   详情：{freq_result['details']}")
         if freq_result['suspicious_domains']:
@@ -371,9 +588,64 @@ if __name__ == "__main__":
                 print(f"     - {domain}: {count}次")
     else:
         print("频率异常检测通过")
+    #2访问对象异常检测
+    access_result = detect_access_pattern_anomaly(dns_records)
+    if access_result['has_anomaly']:
+        print(f"\n访问对象异常告警：")
+        for anomaly_type in access_result['anomaly_types']:
+            print(f"   - {anomaly_type}")
     
-    #2域名恶意检测
-    print("\n正在进行域名恶意检测...")
+        # 高危域名详情
+        if access_result['high_risk_domains']:
+            print(f"\n高危域名（{len(access_result['high_risk_domains'])}个）：")
+            for item in access_result['high_risk_domains'][:5]:
+                print(f"     - {item['domain']} (访问{item['access_count']}次)")
+        
+        # 冷门域名详情
+        if access_result['cold_domains']:
+            ratio = access_result['details'].get('cold_domain_ratio', 0)
+            print(f"\n冷门域名占比过高：{ratio*100:.1f}%")
+            print(f"   (共{access_result['details'].get('cold_domain_count', 0)}个冷门域名，"
+                  f"总唯一域名{access_result['details'].get('total_unique_domains', 0)}个)")
+            for item in access_result['cold_domains'][:5]:
+                print(f"     - {item['domain']} (仅{item['access_count']}次)")
+        # 异常TLD域名
+        if access_result['suspicious_tld_domains']:
+            print(f"\n异常顶级域名（{access_result['details'].get('suspicious_tld_count', 0)}个）：")
+            for item in access_result['suspicious_tld_domains'][:5]:
+                print(f" - {item['domain']} (TLD: {item['tld']})")
+    else:
+        print("访问对象异常检测通过")
+    
+    #3响应异常检测
+    print("\n正在进行响应异常检测...")
+    response_result = detect_response_anomaly(dns_records)
+    if response_result['has_anomaly']:
+        print(f"\n响应异常检测告警：")
+        for anomaly_type in response_result['anomaly_types']:
+            print(f"   - {anomaly_type}")
+        
+        # 域名不存在详情
+        if response_result['non_existent_domains']:
+            print(f"\n域名不存在（{len(response_result['non_existent_domains'])}个）：")
+            for item in response_result['non_existent_domains'][:5]:
+                print(f"     - {item['domain']}")
+        
+        # 返回内网IP详情
+        if response_result['internal_ip_responses']:
+            print(f"\n返回内网IP（{len(response_result['internal_ip_responses'])}个）：")
+            for item in response_result['internal_ip_responses'][:5]:
+                print(f"     - {item['domain']} -> {item['ip']}")
+        
+        # 返回恶意IP详情
+        if response_result['malicious_ip_responses']:
+            print(f"\n返回恶意IP（{len(response_result['malicious_ip_responses'])}个）：")
+            for item in response_result['malicious_ip_responses'][:5]:
+                print(f"     - {item['domain']} -> {item['ip']}")
+    else:
+        print("响应异常检测通过")
+    
+    #4域名恶意检测 
     malicious_list = []
     suspicious_list = []
     normal_list = []
@@ -390,7 +662,6 @@ if __name__ == "__main__":
             suspicious_list.append(res)
         else:
             normal_list.append(res)
-    #尝试提取时间戳
     print("\n" + "=" * 60)
     print("检测报告")
     print(f"正常域名：{len(normal_list)} 个")
