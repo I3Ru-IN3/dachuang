@@ -10,6 +10,9 @@ import sys
 import xxhash
 import dns.rdata
 import socket
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
 
 burst_filter=defaultdict(list)
 cold_filter=defaultdict(list)
@@ -135,10 +138,13 @@ def filter_dns_packets(pcap_path_or_packets):
                         continue
                 # 如果没有 qd 字段，也跳过
                 else:
+                    logging.debug("数据包的 DNS 层缺少问题段，已跳过")
                     continue
             else:
+                logging.debug("数据包的 DNS 层缺少有效的 QR 标志或 qdcount 不为 1，已跳过")
                 continue
         else:
+            logging.debug("数据包不含有 IP、UDP 和 DNS 层，或 DNS 层缺少问题段，已跳过")
             continue
     
     return filtered_packets
@@ -323,14 +329,13 @@ def add_packet_to_group(packet,group):
         packet:数据包
     '''
 
-    # print(f"正在处理数据包，当前group大小：{len(group)}")#打印当前group的大小，方便调试
-
     if not filter_dns_packets([packet]):#如果数据包不满足过滤条件
+        logging.debug("数据包不满足过滤条件，已跳过")#打印提示信息
         return
 
-    dnsinfo = extract_dns_info([packet])[0]#提取数据包中的dns信息
+    dnsinfos = extract_dns_info([packet])#提取数据包中的dns信息
 
-    group.append(dnsinfo)#以（注册域，dnsinfo）的形式将数据添加到group中
+    group.extend(dnsinfos)#以（注册域，dnsinfo）的形式将数据添加到group中
     if len(group) == 1000:#每1000条数据为一组，进行一次过滤器的更新
         add_group_to_filters(group)#将group列表添加到过滤器中
         group.clear()#清空group，为下一组数据做准备
@@ -348,7 +353,7 @@ if __name__ == "__main__":
 
     group = []
     #IFACES.show()
-    sniff(prn=lambda pkt: add_packet_to_group(pkt, group), store=0,timeout = 5,iface=IFACES.dev_from_index(19))#将数据包逐个传入add_packet_to_group函数进行过滤器更新
+    sniff(prn=lambda pkt: add_packet_to_group(pkt, group), store=0,timeout = 60,iface=IFACES.dev_from_index(19))#将数据包逐个传入add_packet_to_group函数进行过滤器更新
     #sniff(prn=lambda pkt: add_packet_to_group(pkt, group), store=0,timeout = 5,offline="filtering/noise.pcapng")#将数据包逐个传入add_packet_to_group函数进行过滤器更新
     if group:#处理最后一组数据
         add_group_to_filters(group)#将group列表添加到过滤器中
