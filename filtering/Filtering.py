@@ -1,16 +1,15 @@
-from scapy.all import *
-from scapy.all import rdpcap, IP, UDP, DNS, DNSQR
+from scapy.all import rdpcap, IP, UDP, DNS, DNSQR, sniff ,show_interfaces,IFACES
 from scapy.layers.inet import IP, UDP
 from scapy.layers.dns import DNS, DNSQR
 from itertools import groupby
 from collections import defaultdict
 from rich import print
+
 import csv
 import sys
 import xxhash
 import dns.rdata
 import socket
-from scapy.all import rdpcap, DNSRR
 
 burst_filter=defaultdict(list)
 cold_filter=defaultdict(list)
@@ -91,7 +90,7 @@ def extract_rdata_payload(rr):
         else:
             return str(rdata)
 
-def filter_dns_packets(pcap_path):
+def filter_dns_packets(pcap_path_or_packets):
     """
     从 PCAP 文件中过滤出满足以下条件的 DNS 数据包：
     - 包含 IP、UDP 和 DNS 层
@@ -100,7 +99,7 @@ def filter_dns_packets(pcap_path):
     - qname 字段存在且可解码为字符串
 
     参数:
-        pcap_path (str): PCAP 文件路径
+        pcap_path_or_packets: PCAP 文件路径或packets列表
 
     返回:
         list: 满足条件的 scapy 数据包对象列表
@@ -108,7 +107,10 @@ def filter_dns_packets(pcap_path):
     filtered_packets = []
     
     # 读取 PCAP 文件（注意：对于大文件建议使用 PcapReader 迭代）
-    packets = rdpcap(pcap_path)
+    if isinstance(pcap_path_or_packets, str):
+        packets = rdpcap(pcap_path_or_packets)
+    elif isinstance(pcap_path_or_packets, list):
+        packets = pcap_path_or_packets
     
     for p in packets:
         # 检查是否包含 IP、UDP 和 DNS 层
@@ -314,24 +316,40 @@ def add_group_to_filters(group):
         add_hot_item(registered_domain,list(dns_info_group))#注册域与dns信息组传入add_hot_item函数进行过滤器更新
 
 
+def add_packet_to_group(packet,group):
+    '''
+    将数据包提取出的dnsinfo添加到group中。
+    参数：
+        packet:数据包
+    '''
+
+    # print(f"正在处理数据包，当前group大小：{len(group)}")#打印当前group的大小，方便调试
+
+    if not filter_dns_packets([packet]):#如果数据包不满足过滤条件
+        return
+
+    dnsinfo = extract_dns_info([packet])[0]#提取数据包中的dns信息
+
+    group.append(dnsinfo)#以（注册域，dnsinfo）的形式将数据添加到group中
+    if len(group) == 1000:#每1000条数据为一组，进行一次过滤器的更新
+        add_group_to_filters(group)#将group列表添加到过滤器中
+        group.clear()#清空group，为下一组数据做准备
+        return
+
+
 if __name__ == "__main__":
     # 替换为实际 PCAP 文件路径
+
     pcap_file = "filtering/noise.pcapng"
+    # valid_packets = filter_dns_packets(pcap_file)#过滤出有效的DNS数据包
+    # print(f"过滤后得到 {len(valid_packets)} 个有效 DNS 数据包")
+    # dns_infos = extract_dns_info(valid_packets)#筛选出dns数据信息
 
-    valid_packets = filter_dns_packets(pcap_file)#过滤出有效的DNS数据包
-    print(f"过滤后得到 {len(valid_packets)} 个有效 DNS 数据包")
-    dns_infos = extract_dns_info(valid_packets)#筛选出dns数据信息
 
-    count = 0
     group = []
-    for dns_info in dns_infos:
-        count += 1
-        group.append(dns_info)#以（注册域，dnsinfo）的形式将数据添加到group中
-        if count == 1000:#每1000条数据为一组，进行一次过滤器的更新
-            count = 0
-            add_group_to_filters(group)#将group列表添加到过滤器中
-            group.clear()#清空group，为下一组数据做准备
-
+    #IFACES.show()
+    sniff(prn=lambda pkt: add_packet_to_group(pkt, group), store=0,timeout = 5,iface=IFACES.dev_from_index(19))#将数据包逐个传入add_packet_to_group函数进行过滤器更新
+    #sniff(prn=lambda pkt: add_packet_to_group(pkt, group), store=0,timeout = 5,offline="filtering/noise.pcapng")#将数据包逐个传入add_packet_to_group函数进行过滤器更新
     if group:#处理最后一组数据
         add_group_to_filters(group)#将group列表添加到过滤器中
         group.clear()#清空group
