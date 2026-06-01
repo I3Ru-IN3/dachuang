@@ -55,6 +55,10 @@ MALICIOUS_IPS = {
     '45.33.32.156', '91.189.92.10', '185.199.108.153'
 }
 
+# 资源密集型记录类型配置
+RESOURCE_HEAVY_TYPES = {'TXT', 'MX', 'SRV', 'ANY'}
+TYPE_FREQUENCY_THRESHOLD=20 # 每分钟查询次数上限
+
 try:
     ML_MODEL = joblib.load('dns_malware_model.pkl')
     print("机器学习模型加载成功")
@@ -104,7 +108,6 @@ def detect_frequency_anomaly(dns_data, is_user_active=True):
             'query_count': len(timestamps),
             'duration_seconds': round(duration, 2)
         }
-    
     #2突发访问检测（计算每秒查询数）
     intervals = [timestamps[i+1] - timestamps[i] for i in range(len(timestamps)-1)]
     if intervals:
@@ -119,7 +122,6 @@ def detect_frequency_anomaly(dns_data, is_user_active=True):
                     'threshold': BURST_THRESHOLD,
                     'min_interval_ms': round(min_interval * 1000, 2)
                 }
-    
     #3空闲时段异常检测（用户未使用电脑时却有高频访问）
     if not is_user_active and frequency > IDLE_BURST_THRESHOLD:
         result['has_anomaly']=True
@@ -127,7 +129,7 @@ def detect_frequency_anomaly(dns_data, is_user_active=True):
         result['details'] = {
             'frequency': round(frequency, 2),
             'threshold': IDLE_BURST_THRESHOLD,
-            'warning': '用户未使用电脑时检测到高频DNS访问，可能存在后台恶意软件'
+            'warning': '用户未使用电脑时检测到高频DNS访问，可能存在恶意攻击'
         }
     
     #收集高频访问的域名
@@ -261,7 +263,7 @@ def detect_response_anomaly(dns_data):
         except:
             return False
     
-    # 辅助函数：验证域名是否存在（通过socket解析）
+    #辅助函数：验证域名是否存在
     def domain_exists(domain):
         try:
             socket.gethostbyname(domain)
@@ -330,6 +332,102 @@ def detect_response_anomaly(dns_data):
         result['has_anomaly'] = True
         result['anomaly_types'].append('返回恶意IP')
         result['details']['malicious_ip_count'] = malicious_ip_count
+    
+    return result
+
+# DNS记录类型到名称的映射
+DNS_TYPE_MAP = {
+    1: 'A', 2: 'NS', 5: 'CNAME', 6: 'SOA', 12: 'PTR', 15: 'MX',
+    16: 'TXT', 28: 'AAAA', 33: 'SRV', 255: 'ANY'
+}
+
+def get_dns_type_name(qtype):
+    """将DNS类型编号转换为名称"""
+    return DNS_TYPE_MAP.get(qtype, f'UNKNOWN({qtype})')
+
+# 记录类型异常检测函数
+def detect_record_type_anomaly(dns_data):
+    """
+    检测DNS记录类型异常：频繁查询TXT/MX等资源密集型记录
+    param dns_data: DNS记录列表，每条记录包含 type 字段
+    return 异常检测结果
+    """
+    result = {
+        'has_anomaly': False,
+        'anomaly_types': [],
+        'heavy_type_records': [],
+        'details': {}
+    }
+    
+    if not dns_data:
+        return result
+    
+    # 统计各类型查询次数
+    type_counts = {}
+    heavy_type_count = 0
+    total_queries = 0
+    timestamps = []
+    
+    for item in dns_data:
+        if isinstance(item, dict):
+            qtype = item.get('type', 'A')
+            timestamp = item.get('timestamp')
+            if timestamp:
+                timestamps.append(timestamp)
+            type_counts[qtype] = type_counts.get(qtype, 0) + 1
+            total_queries += 1
+            # 检查是否为资源密集型类型
+            if isinstance(qtype, int):
+                qtype_name = get_dns_type_name(qtype)
+            else:
+                qtype_name = str(qtype).upper()
+            if qtype_name in RESOURCE_HEAVY_TYPES:
+                heavy_type_count += 1
+                if qtype not in [r['type'] for r in result['heavy_type_records']]:
+                    result['heavy_type_records'].append({
+                        'type': qtype,
+                        'type_name': qtype_name,
+                        'domain': item.get('domain', ''),
+                        'count': 0
+                    })
+    
+    # 更新各资源密集型类型的计数
+    for rec in result['heavy_type_records']:
+        rec['count'] = type_counts.get(rec['type'], 0)
+    
+    # 计算频率（次/分钟）
+    frequency = 0
+    if timestamps and len(timestamps) >= 5:
+        timestamps.sort()
+        duration = timestamps[-1] - timestamps[0]
+        if duration > 0:
+            frequency = heavy_type_count / (duration / 60)
+    
+    # 检测频繁查询资源密集型记录
+    if frequency > TYPE_FREQUENCY_THRESHOLD:
+        result['has_anomaly'] = True
+        result['anomaly_types'].append('频繁查询资源密集型记录')
+        result['details'] = {
+            'heavy_type_frequency': round(frequency, 2),
+            'threshold': TYPE_FREQUENCY_THRESHOLD,
+            'heavy_type_count': heavy_type_count,
+            'total_queries': total_queries,
+            'heavy_type_ratio': round(heavy_type_count / total_queries * 100, 2) if total_queries > 0 else 0
+        }
+    
+    # 检测单一类型过度使用
+    for qtype, count in type_counts.items():
+        if isinstance(qtype, int):
+            qtype_name = get_dns_type_name(qtype)
+        else:
+            qtype_name = str(qtype).upper()
+        if qtype_name in RESOURCE_HEAVY_TYPES:
+            ratio = count / total_queries if total_queries > 0 else 0
+            if ratio > 0.3:  # 超过30%的查询是资源密集型类型
+                if '单一类型过度使用' not in result['anomaly_types']:
+                    result['has_anomaly'] = True
+                    result['anomaly_types'].append('单一类型过度使用')
+                result['details'][f'{qtype_name}_ratio'] = round(ratio * 100, 2)
     
     return result
 
@@ -526,10 +624,12 @@ def load_dns_log(file_path: str = "dns_log.txt") -> list:
                     if packet.haslayer(DNS) and packet[DNS].qr == 0:
                         for i in range(packet[DNS].qdcount):
                             qname = packet[DNS].qd[i].qname.decode('utf-8', errors='ignore').rstrip('.')
+                            qtype = packet[DNS].qd[i].qtype if hasattr(packet[DNS].qd[i], 'qtype') else 1
                             if qname:
                                 dns_records.append({
                                     'domain': qname,
-                                    'timestamp': float(packet.time)
+                                    'timestamp': float(packet.time),
+                                    'type': qtype
                                 })
             except Exception as e:
                 print(f"解析PCAP文件时出错：{e}")
@@ -645,7 +745,32 @@ if __name__ == "__main__":
     else:
         print("响应异常检测通过")
     
-    #4域名恶意检测 
+    #4记录类型异常检测（检测频繁查询TXT/MX等资源密集型记录）
+    print("\n正在进行记录类型异常检测...")
+    type_result = detect_record_type_anomaly(dns_records)
+    if type_result['has_anomaly']:
+        print(f"\n记录类型异常检测告警：")
+        for anomaly_type in type_result['anomaly_types']:
+            print(f"   - {anomaly_type}")
+        
+        # 详细信息
+        details = type_result['details']
+        if 'heavy_type_frequency' in details:
+            print(f"\n资源密集型记录查询频率：{details['heavy_type_frequency']}次/分钟")
+            print(f"阈值：{details['threshold']}次/分钟")
+            print(f"资源密集型记录数：{details['heavy_type_count']}条（占总查询的{details['heavy_type_ratio']}%）")
+        
+        # 资源密集型类型详情
+        if type_result['heavy_type_records']:
+            print(f"\n检测到的资源密集型记录类型：")
+            for rec in type_result['heavy_type_records']:
+                print(f"   - {rec['type_name']} (类型码: {rec['type']}): {rec['count']}次")
+                if rec['domain']:
+                    print(f"     示例域名: {rec['domain']}")
+    else:
+        print("记录类型异常检测通过")
+    
+    #5域名恶意检测 
     malicious_list = []
     suspicious_list = []
     normal_list = []
