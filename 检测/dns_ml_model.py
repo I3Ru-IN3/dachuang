@@ -1,332 +1,657 @@
-import pandas as pd
-import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, confusion_matrix
-from sklearn.pipeline import Pipeline
-import joblib
+import argparse
+import os
+import sys
 import re
-from scapy.all import rdpcap, DNS
+import math
 import json
+import csv
+from collections import Counter
 
-# 域名特征提取函数
-def extract_features(domain):
+import numpy as np
+from scapy.all import rdpcap, DNS, DNSQR
+import joblib
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import StandardScaler
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+USE_SOCKET4_FEATURES = False
+USE_JUDGMENT = False
+
+# 尝试加载 firstjudgment.py 用于初步研判
+try:
+    import importlib.machinery
+    judgment_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'firstjudgment.py')
+    if os.path.exists(judgment_path):
+        loader = importlib.machinery.SourceFileLoader('judgment_module', judgment_path)
+        judgment_module = loader.load_module()
+        USE_JUDGMENT = True
+        print(f"成功加载 firstjudgment.py 模块")
+    else:
+        print(f"错误: 未找到 firstjudgment.py，无法进行初步研判")
+except Exception as e:
+    print(f"错误: 加载 firstjudgment.py 失败: {e}，无法进行初步研判")
+
+# 尝试加载 import socket4.py 用于精密研判
+try:
+    socket4_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'import socket4.py')
+    if os.path.exists(socket4_path):
+        loader = importlib.machinery.SourceFileLoader('socket4_module', socket4_path)
+        socket4_module = loader.load_module()
+        USE_SOCKET4_FEATURES = True
+        print(f"成功加载 import socket4.py 模块")
+    else:
+        print(f"错误: 未找到 import socket4.py，无法进行精密研判")
+except Exception as e:
+    print(f"错误: 加载 import socket4.py 失败: {e}，无法进行精密研判")
+
+FEATURE_NAMES = [
+    'length', 'digit_ratio', 'special_chars', 'subdomains',
+    'has_long_random', 'has_idn', 'is_base64', 'is_hex_encoded',
+    'avg_subdomain_length', 'max_subdomain_length', 'domain_entropy',
+    'has_repeated_patterns', 'has_consecutive_chars'
+]
+
+class OnlineLearningBuffer:
+    """在线学习样本缓冲区"""
+    
+    def __init__(self, threshold=10):
+        self.threshold = threshold
+        self.normal_samples = []
+        self.malicious_samples = []
+        self.normal_features = []
+        self.malicious_features = []
+    
+    def add_sample(self, domain, features, is_malicious):
+        feature_vector = np.array(list(features.values())) if hasattr(features, 'values') else np.array(features)
+        if is_malicious:
+            self.malicious_samples.append(domain)
+            self.malicious_features.append(feature_vector)
+        else:
+            self.normal_samples.append(domain)
+            self.normal_features.append(feature_vector)
+    
+    def should_update(self):
+        return len(self.normal_features) >= self.threshold // 2 or len(self.malicious_features) >= self.threshold // 2
+    
+    def get_samples(self):
+        all_features = self.normal_features + self.malicious_features
+        all_labels = [0] * len(self.normal_features) + [1] * len(self.malicious_features)
+        return np.array(all_features), np.array(all_labels)
+    
+    def clear(self):
+        self.normal_samples.clear()
+        self.malicious_samples.clear()
+        self.normal_features.clear()
+        self.malicious_features.clear()
+    
+    def get_count(self):
+        return {
+            'normal': len(self.normal_samples),
+            'malicious': len(self.malicious_samples),
+            'total': len(self.normal_samples) + len(self.malicious_samples)
+        }
+
+def online_update_model(model, scaler, buffer, model_path):
+    """在线更新模型"""
+    if not buffer.should_update():
+        return model, scaler
+    
+    print(f"\n[在线学习] 检测到 {buffer.get_count()['total']} 个新样本，开始增量学习...")
+    
+    try:
+        X_new, y_new = buffer.get_samples()
+        if len(X_new.shape) == 1:
+            X_new = X_new.reshape(1, -1)
+        X_new_scaled = scaler.transform(X_new)
+        model.partial_fit(X_new_scaled, y_new, classes=np.array([0, 1]))
+        joblib.dump((model, scaler), model_path)
+        print(f"[在线学习] 模型已更新并保存到: {model_path}")
+        buffer.clear()
+        return model, scaler
+    except Exception as e:
+        print(f"[在线学习] 更新失败: {e}")
+        return model, scaler
+
+def extract_domain_features(domain):
+    """提取域名特征用于机器学习"""
     features = {}
-    # 域名长度
     features['length'] = len(domain)
-    # 数字比例
     features['digit_ratio'] = sum(c.isdigit() for c in domain) / len(domain) if len(domain) > 0 else 0
-    # 特殊字符数量
     features['special_chars'] = len(re.findall(r'[^a-zA-Z0-9.]', domain))
-    # 子域名数量
     features['subdomains'] = domain.count('.')
-    # 是否包含长随机字符串
     features['has_long_random'] = 1 if re.search(r'[a-z0-9]{15,}', domain) else 0
-    # 是否包含国际化域名标记
     features['has_idn'] = 1 if 'xn--' in domain else 0
-    # 顶级域名
-    tld = domain.split('.')[-1] if '.' in domain else domain
-    features['tld'] = tld
+    
+    # Base64检测
+    clean_domain = domain.replace('.', '').replace('-', '').replace('_', '')
+    base64_pattern = re.compile(r'^[A-Za-z0-9+/]+=*$')
+    features['is_base64'] = 1 if len(clean_domain) % 4 == 0 and base64_pattern.match(clean_domain) else 0
+    
+    # 十六进制检测
+    clean_domain_hex = domain.replace('.', '').replace('-', '')
+    hex_pattern = re.compile(r'^[0-9a-fA-F]+$')
+    features['is_hex_encoded'] = 1 if hex_pattern.match(clean_domain_hex) and len(clean_domain_hex) >= 8 else 0
+    
+    # 子域名长度
+    parts = domain.split('.')
+    if len(parts) <= 1:
+        features['avg_subdomain_length'] = 0.0
+        features['max_subdomain_length'] = 0.0
+    else:
+        features['avg_subdomain_length'] = np.mean([len(p) for p in parts[:-1]])
+        features['max_subdomain_length'] = max([len(p) for p in parts[:-1]])
+    
+    # 熵值计算
+    if not domain:
+        features['domain_entropy'] = 0.0
+    else:
+        freq = Counter(domain)
+        total = len(domain)
+        entropy = 0.0
+        for count in freq.values():
+            probability = count / total
+            entropy -= probability * math.log2(probability)
+        features['domain_entropy'] = entropy
+    
+    features['has_repeated_patterns'] = 1 if re.search(r'(.{3,})\1{2,}', domain) else 0
+    features['has_consecutive_chars'] = 1 if re.search(r'(.)\1{3,}', domain) else 0
+    
     return features
 
-# 从pcapng文件读取DNS域名
-def load_domains_from_pcapng(pcapng_file):
+def rapid_analysis(domain):
+    """
+    初步研判：快速筛选安全度高的DNS流量
+    使用 firstjudgment.py 进行研判
+    """
+    if USE_JUDGMENT:
+        result = judgment_module.quick_safety_check(domain)
+        return {
+            'is_safe': result['is_safe'],
+            'safety_score': 100 - result['risk_score'],
+            'reasons': result['reasons'],
+            'can_skip': result.get('can_skip', False)
+        }
+    else:
+        raise Exception("未加载 firstjudgment.py 模块，无法进行初步研判")
+
+def batch_rapid_filter(domains):
+    """
+    批量初步研判筛选
+    使用 firstjudgment.py 进行研判
+    """
+    if USE_JUDGMENT:
+        results, stats = judgment_module.filter_domains(domains, skip_safe=False)
+        safe_domains = []
+        suspicious_domains = []
+        
+        for result in results:
+            result['safety_score'] = 100 - result['risk_score']
+            result['is_safe'] = result['safety_score'] >= 60
+            
+            if result['is_safe']:
+                safe_domains.append(result)
+            else:
+                suspicious_domains.append(result)
+        
+        return {
+            'safe_domains': safe_domains,
+            'suspicious_domains': suspicious_domains,
+            'filtered_count': len(safe_domains),
+            'remaining_count': len(suspicious_domains),
+            'total_count': len(domains),
+            'filter_rate': len(safe_domains) / len(domains) * 100
+        }
+    else:
+        raise Exception("未加载 firstjudgment.py 模块，无法进行初步研判")
+
+def load_pcap_domains(pcap_path):
     domains = []
     try:
-        packets = rdpcap(pcapng_file)
+        packets = rdpcap(pcap_path)
         for packet in packets:
-            if packet.haslayer(DNS) and packet[DNS].qr == 0:
-                for i in range(packet[DNS].qdcount):
-                    qname = packet[DNS].qd[i].qname.decode('utf-8', errors='ignore').rstrip('.')
-                    if qname:
-                        domains.append(qname)
+            if DNS in packet and packet[DNS].qr == 0:
+                qd = packet[DNS].qd
+                if qd and qd.qname:
+                    domain = qd.qname.decode('utf-8').rstrip('.')
+                    domains.append(domain)
+        return list(set(domains))
     except Exception as e:
-        print(f"解析PCAPNG文件时出错：{e}")
+        print(f"Error loading PCAP: {e}")
+        return []
+
+def load_domain_file(file_path):
+    domains = []
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                domain = line.strip()
+                if domain and not domain.startswith('#'):
+                    domains.append(domain)
+        return domains
+    except Exception as e:
+        print(f"Error loading file: {e}")
+        return []
+
+def load_pcap_domains_with_timestamps(pcap_path):
+    records = []
+    try:
+        packets = rdpcap(pcap_path)
+        for packet in packets:
+            if DNS in packet and packet[DNS].qr == 0:
+                qd = packet[DNS].qd
+                if qd and qd.qname:
+                    domain = qd.qname.decode('utf-8').rstrip('.')
+                    timestamp = float(packet.time)
+                    records.append({
+                        'domain': domain,
+                        'timestamp': timestamp,
+                        'qtype': qd.qtype if hasattr(qd, 'qtype') else 1
+                    })
+        return records
+    except Exception as e:
+        print(f"Error loading PCAP: {e}")
+        return []
+def generate_training_data(pcap_path, output_csv, label=1):
+    """从PCAP文件生成训练数据"""
+    print(f"正在从PCAP文件生成训练数据: {pcap_path}")
+    records = load_pcap_domains_with_timestamps(pcap_path)
+    if not records:
+        print("未找到DNS记录")
+        return
+    
+    domains = list(set([r['domain'] for r in records]))
+    print(f"发现 {len(domains)} 个唯一域名")
+    
+    with open(output_csv, 'w', encoding='utf-8', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['domain'] + FEATURE_NAMES + ['label'])
+        for domain in domains:
+            features = extract_domain_features(domain)
+            feature_values = [features.get(f, 0) for f in FEATURE_NAMES]
+            writer.writerow([domain] + feature_values + [label])
+    
+    print(f"训练数据已保存到: {output_csv}")
     return domains
 
-# 从标注文件加载已标注的域名数据
-def load_labeled_domains(label_file):
-    labeled_data = []
+def train_model(train_data_path, model_path):
+    """训练机器学习模型"""
+    import pandas as pd
+    
+    print(f"加载训练数据: {train_data_path}")
     try:
-        with open(label_file, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            for item in data:
-                if isinstance(item, dict) and 'domain' in item and 'label' in item:
-                    labeled_data.append((item['domain'], item['label']))
-    except FileNotFoundError:
-        print(f"标注文件 {label_file} 不存在")
+        df = pd.read_csv(train_data_path)
     except Exception as e:
-        print(f"读取标注文件时出错：{e}")
-    return labeled_data
-
-# 交互式标注域名
-def interactive_labeling(domains):
-    labeled_data = []
-    print(f"开始交互式标注，共有 {len(domains)} 个域名")
-    print("输入 0 表示正常域名，1 表示恶意域名，q 退出标注")
+        print(f"加载训练数据失败: {e}")
+        return
     
-    for i, domain in enumerate(domains):
-        while True:
-            user_input = input(f"域名 [{i+1}/{len(domains)}] {domain} (0/1/q): ").strip().lower()
-            if user_input == 'q':
-                print(f"标注完成，共标注 {len(labeled_data)} 个域名")
-                return labeled_data
-            elif user_input in ['0', '1']:
-                label = int(user_input)
-                labeled_data.append((domain, label))
-                break
-            else:
-                print("无效输入，请输入 0、1 或 q")
+    X = df[FEATURE_NAMES].values
+    y = df['label'].values
     
-    return labeled_data
-
-# 保存标注数据
-def save_labeled_data(labeled_data, output_file):
-    data = [{'domain': domain, 'label': label} for domain, label in labeled_data]
-    try:
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        print(f"标注数据已保存到 {output_file}")
-    except Exception as e:
-        print(f"保存标注数据时出错：{e}")
-
-# 准备数据集
-def prepare_dataset(labeled_data=None):
-    # 如果没有提供标注数据，使用默认的标注数据集
-    if labeled_data is None:
-        data = [
-            # 正常域名
-            ('www.baidu.com', 0),
-            ('www.google.com', 0),
-            ('github.com', 0),
-            ('www.microsoft.com', 0),
-            ('www.apple.com', 0),
-            ('www.amazon.com', 0),
-            ('www.taobao.com', 0),
-            ('www.jd.com', 0),
-            ('www.qq.com', 0),
-            ('www.weibo.com', 0),
-            # 恶意域名
-            ('malware-test.com', 1),
-            ('phishing-example.org', 1),
-            ('botnet-command.cc', 1),
-            ('evil-domain.ru', 1),
-            ('ad-tracker.net', 1),
-            ('fake-bank.com', 1),
-            ('random123456789abc.top', 1),
-            ('xn--80ak6aa92e.com', 1),
-            ('123456789012345.com', 1),
-            ('malicious-site.work', 1)
-        ]
-    else:
-        data = labeled_data
+    print(f"训练样本数: {len(y)}")
+    print(f"恶意样本: {sum(y)} ({sum(y)/len(y)*100:.2f}%)")
+    print(f"正常样本: {len(y)-sum(y)} ({(len(y)-sum(y))/len(y)*100:.2f}%)")
     
-    # 转换为DataFrame
-    df = pd.DataFrame(data, columns=['domain', 'label'])
-    # 提取特征
-    features = []
-    for domain in df['domain']:
-        feat = extract_features(domain)
-        features.append(feat)
-    # 转换特征为DataFrame
-    features_df = pd.DataFrame(features)
-    # 合并特征和标签
-    final_df = pd.concat([df, features_df], axis=1)
-    # 只使用数值特征，避免TLD编码问题
-    numeric_features = ['length', 'digit_ratio', 'special_chars', 'subdomains', 'has_long_random', 'has_idn']
-    final_df = final_df[['domain', 'label'] + numeric_features]
-    return final_df
-# 训练模型
-def train_model(labeled_data=None):
-    # 准备数据
-    df = prepare_dataset(labeled_data)
-    # 特征和标签
-    X = df.drop(['domain', 'label'], axis=1)
-    y = df['label']
-    # 分割训练集和测试集
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    # 创建并训练模型
-    model = RandomForestClassifier(n_estimators=100, random_state=42)
-    model.fit(X_train, y_train)
-    # 测试模型
-    y_pred = model.predict(X_test)
-    print("分类报告：")
-    print(classification_report(y_test, y_pred))
-    print("混淆矩阵：")
-    print(confusion_matrix(y_test, y_pred))
+    # 标准化特征
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    # 训练随机森林模型
+    print("\n训练 Random Forest 模型...")
+    model = RandomForestClassifier(
+        n_estimators=200,
+        max_depth=15,
+        min_samples_split=5,
+        min_samples_leaf=2,
+        random_state=42,
+        n_jobs=-1
+    )
+    model.fit(X_scaled, y)
+    
     # 保存模型
-    joblib.dump(model, 'dns_malware_model.pkl')
-    print("模型已保存为 dns_malware_model.pkl")
-    return model
+    joblib.dump((model, scaler), model_path)
+    print(f"\n模型已保存到: {model_path}")
+    
+    # 特征重要性
+    print("\n=== 特征重要性 ===")
+    importances = model.feature_importances_
+    indices = np.argsort(importances)[::-1]
+    for f in range(len(FEATURE_NAMES)):
+        idx = indices[f]
+        print(f"{f+1}. {FEATURE_NAMES[idx]}: {importances[idx]:.4f}")
+    
+    return model, scaler
 
-# 从pcapng文件训练模型的完整流程
-def train_from_pcapng(pcapng_file, label_file=None, auto_label=False):
-    # 1. 从pcapng文件加载域名
-    print(f"正在从 {pcapng_file} 加载域名...")
-    domains = load_domains_from_pcapng(pcapng_file)
+def main():
+    parser = argparse.ArgumentParser(description='DNS隧道检测 - 两级检测流程')
+    parser.add_argument('--two-stage', action='store_true', help='使用两级检测流程：初步研判筛选 -> 精密研判')
+    parser.add_argument('--input', help='导入外部PCAP/PCAPNG/CSV/TXT文件进行检测')
+    parser.add_argument('--detect', action='store_true', help='执行检测模式（与--input配合使用）')
+    parser.add_argument('--online-learn', action='store_true', help='启用在线学习模式')
+    parser.add_argument('--learn-threshold', type=int, default=10, help='在线学习触发阈值')
+    parser.add_argument('--model', default='dns_ml_model.pkl', help='模型保存/加载路径')
+    parser.add_argument('--generate', help='从PCAP文件生成训练数据')
+    parser.add_argument('--train', help='使用CSV训练数据训练模型')
+    parser.add_argument('--label', type=int, default=1, help='生成训练数据时的标签(0=正常,1=恶意)')
+    parser.add_argument('--output', default='dns_training_data.csv', help='训练数据输出路径')
+    parser.add_argument('--predict', help='待检测的域名、文件或PCAP路径')
     
-    if not domains:
-        print("未从pcapng文件中提取到任何域名")
-        return None
+    args = parser.parse_args()
     
-    print(f"成功提取 {len(domains)} 个域名")
-    
-    # 2. 域名去重
-    domains = list(set(domains))
-    print(f"去重后剩余 {len(domains)} 个唯一域名")
-    
-    # 3. 标注域名
-    labeled_data = None
-    
-    if label_file:
-        # 尝试从标注文件加载
-        labeled_data = load_labeled_domains(label_file)
-        if labeled_data:
-            print(f"从标注文件加载了 {len(labeled_data)} 个已标注域名")
+    if args.input:
+        input_path = args.input.strip('"').strip("'")
+        if not os.path.exists(input_path):
+            print(f"文件不存在: {input_path}")
+            return
+        
+        ext = input_path.lower()
+        dns_records = []
+        domains = []
+        
+        if ext.endswith('.pcap') or ext.endswith('.pcapng'):
+            print(f"正在从PCAP文件提取DNS记录: {input_path}")
+            dns_records = load_pcap_domains_with_timestamps(input_path)
+            domains = [r['domain'] for r in dns_records]
+        elif ext.endswith('.csv'):
+            print(f"正在从CSV文件读取域名: {input_path}")
+            domains = load_domain_file(input_path)
+        elif ext.endswith('.txt'):
+            print(f"正在从TXT文件读取域名: {input_path}")
+            domains = load_domain_file(input_path)
         else:
-            print("标注文件不存在或为空，将进行交互式标注")
-    
-    if not labeled_data:
-        if auto_label:
-            # 自动标注（基于黑名单和特征）
-            print("正在进行自动标注...")
-            labeled_data = auto_label_domains(domains)
-        else:
-            # 交互式标注
-            labeled_data = interactive_labeling(domains)
+            print(f"不支持的文件格式: {ext}")
+            return
+        
+        if not domains:
+            print("未找到待检测域名")
+            return
+        
+        unique_domains = list(set(domains))
+        print(f"提取到 {len(dns_records)} 条DNS记录，{len(unique_domains)} 个唯一域名")
+        
+        if args.detect:
+            print("\n" + "="*80)
+            print("【外部数据包检测模式】")
+            print("="*80)
             
-            # 保存标注结果
-            if labeled_data:
-                save_labeled_data(labeled_data, 'dns_labels.json')
+            filter_result = batch_rapid_filter(unique_domains)
+            
+            print(f"\n初步研判完成:")
+            print(f"  总域名数: {filter_result['total_count']}")
+            print(f"  安全域名: {filter_result['filtered_count']} ({filter_result['filter_rate']:.1f}%)")
+            print(f"  可疑域名: {filter_result['remaining_count']}")
+            
+            if not filter_result['suspicious_domains']:
+                print("\n【检测完成】所有域名均为安全")
+                return
+            
+            # 检查是否有import socket4.py模块
+            if not USE_SOCKET4_FEATURES:
+                print("\n错误: 未找到import socket4.py模块，无法进行精密研判")
+                return
+            
+            # 精密研判 - 只使用import socket4.py
+            print("\n" + "="*80)
+            print("【精密研判 - import socket4.py】")
+            print("="*80)
+            
+            # 初始化在线学习
+            model = None
+            scaler = None
+            learning_buffer = None
+            if args.online_learn:
+                learning_buffer = OnlineLearningBuffer(threshold=args.learn_threshold)
+                try:
+                    model, scaler = joblib.load(args.model)
+                    print(f"[在线学习] 已加载模型: {args.model}")
+                except Exception as e:
+                    print(f"[在线学习] 未找到模型文件 {args.model}，跳过在线学习")
+                    args.online_learn = False
+            
+            # 获取suspicious domains
+            suspicious_domains_list = [s['domain'] for s in filter_result['suspicious_domains']]
+            
+            # 筛选出相关的DNS记录用于socket4.py检测
+            relevant_records = [r for r in dns_records if r['domain'] in suspicious_domains_list]
+            
+            print("正在进行多维度检测...")
+            
+            # 1. 频率异常检测
+            print("\n1. 频率异常检测...")
+            freq_result = socket4_module.detect_frequency_anomaly(relevant_records)
+            if freq_result['has_anomaly']:
+                print(f"   [告警] 异常类型: {freq_result['anomaly_type']}")
+                print(f"   详情: {freq_result['details']}")
+                if freq_result['suspicious_domains']:
+                    print(f"   高频访问域名:")
+                    for domain, count in freq_result['suspicious_domains']:
+                        print(f"     - {domain}: {count}次")
+            else:
+                print("   [通过]")
+            
+            # 2. 访问对象异常检测
+            print("\n2. 访问对象异常检测...")
+            access_result = socket4_module.detect_access_pattern_anomaly(relevant_records)
+            if access_result['has_anomaly']:
+                print(f"   [告警] 异常类型: {', '.join(access_result['anomaly_types'])}")
+                for item in access_result['high_risk_domains']:
+                    print(f"   - 高危域名: {item['domain']} ({item['reason']})")
+            else:
+                print("   [通过]")
+            
+            # 3. 响应异常检测
+            print("\n3. 响应异常检测...")
+            response_result = socket4_module.detect_response_anomaly(relevant_records)
+            if response_result['has_anomaly']:
+                print(f"   [告警] 异常类型: {', '.join(response_result['anomaly_types'])}")
+                if response_result['internal_ip_responses']:
+                    for item in response_result['internal_ip_responses'][:3]:
+                        print(f"   - {item['domain']} -> {item['ip']} ({item['reason']})")
+            else:
+                print("   [通过]")
+            
+            # 4. 记录类型异常检测
+            print("\n4. 记录类型异常检测...")
+            type_result = socket4_module.detect_record_type_anomaly(relevant_records)
+            if type_result['has_anomaly']:
+                print(f"   [告警] 异常类型: {', '.join(type_result['anomaly_types'])}")
+                if type_result['heavy_type_records']:
+                    for rec in type_result['heavy_type_records']:
+                        print(f"   - {rec['type_name']}: {rec['count']}次")
+            else:
+                print("   [通过]")
+            
+            # 5. 单个域名详细检测
+            print("\n" + "="*80)
+            print("【域名详细检测】")
+            print("="*80)
+            print(f"{'域名':<45} {'状态':<10} {'原因'}")
+            print("="*80)
+            
+            malicious_domains = []
+            suspicious_domains = []
+            
+            for domain in suspicious_domains_list:
+                res = socket4_module.check_dns_record(domain)
+                
+                # 在线学习：将检测结果添加到学习缓冲区
+                if args.online_learn and model is not None:
+                    features = extract_domain_features(domain)
+                    feature_vector = [features.get(f, 0) for f in FEATURE_NAMES]
+                    is_malicious = res["is_malicious"]
+                    learning_buffer.add_sample(domain, feature_vector, is_malicious)
+                    # 检查是否需要更新模型
+                    model, scaler = online_update_model(model, scaler, learning_buffer, args.model)
+                
+                if res["is_malicious"]:
+                    status = "[恶意]"
+                    malicious_domains.append(res)
+                elif res["is_suspicious"]:
+                    status = "[可疑]"
+                    suspicious_domains.append(res)
+                else:
+                    status = "[正常]"
+                
+                reason = res["reason"]
+                if res.get('ml_prediction') is not None:
+                    ml_label = '恶意' if res['ml_prediction'] else '正常'
+                    reason += f" | ML: {ml_label} ({res['ml_confidence']:.2f})"
+                
+                print(f"{domain:<45} {status:<10} {reason}")
+            
+            # 总结报告
+            print("\n" + "="*80)
+            print("【检测总结】")
+            print("="*80)
+            print(f"总域名数: {filter_result['total_count']}")
+            print(f"初步筛选安全: {filter_result['filtered_count']}")
+            print(f"精密研判: {len(suspicious_domains_list)}")
+            print(f"  - 恶意域名: {len(malicious_domains)}")
+            print(f"  - 可疑域名: {len(suspicious_domains)}")
+            print(f"  - 正常域名: {len(suspicious_domains_list) - len(malicious_domains) - len(suspicious_domains)}")
+            
+            if malicious_domains:
+                print(f"\n发现{len(malicious_domains)}个恶意域名:")
+                for item in malicious_domains:
+                    print(f"  - {item['domain']}: {item['reason']}")
+        return
     
-    if not labeled_data or len(labeled_data) < 10:
-        print("警告：标注数据不足，将使用默认数据集")
-        labeled_data = None
+    if args.predict:
+        domains = []
+        if os.path.isfile(args.predict):
+            ext = args.predict.lower()
+            if ext.endswith('.pcap') or ext.endswith('.pcapng'):
+                domains = load_domain_file(args.predict)
+                if not domains:
+                    domains = load_pcap_domains(args.predict)
+            else:
+                domains = load_domain_file(args.predict)
+        else:
+            domains = [args.predict]
+        
+        if not domains:
+            print("未找到待检测域名")
+            return
+        
+        print(f"待检测域名数: {len(domains)}")
+        
+        if args.two_stage:
+            print("\n" + "="*80)
+            print("【第一阶段：初步研判筛选】")
+            print("="*80)
+            
+            filter_result = batch_rapid_filter(domains)
+            
+            print(f"\n初步研判完成:")
+            print(f"  总域名数: {filter_result['total_count']}")
+            print(f"  安全域名: {filter_result['filtered_count']} ({filter_result['filter_rate']:.1f}%)")
+            print(f"  可疑域名: {filter_result['remaining_count']}")
+            
+            if filter_result['safe_domains']:
+                print("\n  安全域名列表:")
+                for safe in filter_result['safe_domains'][:5]:
+                    print(f"    - {safe['domain']} (安全度: {safe['safety_score']:.0f}%)")
+                if len(filter_result['safe_domains']) > 5:
+                    print(f"    ... 还有 {len(filter_result['safe_domains']) - 5} 个安全域名")
+            
+            if not filter_result['suspicious_domains']:
+                print("\n【检测完成】所有域名均为安全")
+                return
+            
+            # 检查是否有import socket4.py模块
+            if not USE_SOCKET4_FEATURES:
+                print("\n错误: 未找到import socket4.py模块，无法进行精密研判")
+                return
+            
+            # 精密研判 - 只使用import socket4.py
+            print("\n" + "="*80)
+            print("【第二阶段：精密研判 - import socket4.py】")
+            print("="*80)
+            
+            suspicious_domains_list = [s['domain'] for s in filter_result['suspicious_domains']]
+            print(f"对 {len(suspicious_domains_list)} 个可疑域名进行精密研判...")
+            
+            # 构造DNS记录（对于没有时间戳的，用当前时间）
+            import time
+            current_time = time.time()
+            relevant_records = []
+            for domain in suspicious_domains_list:
+                relevant_records.append({
+                    'domain': domain,
+                    'timestamp': current_time,
+                    'qtype': 1
+                })
+            
+            # 单个域名详细检测
+            print("\n" + "="*80)
+            print("【域名详细检测】")
+            print("="*80)
+            print(f"{'域名':<45} {'状态':<10} {'原因'}")
+            print("="*80)
+            
+            malicious_domains = []
+            suspicious_domains = []
+            
+            for domain in suspicious_domains_list:
+                res = socket4_module.check_dns_record(domain)
+                
+                # 在线学习：将检测结果添加到学习缓冲区
+                if args.online_learn and model is not None:
+                    features = extract_domain_features(domain)
+                    feature_vector = [features.get(f, 0) for f in FEATURE_NAMES]
+                    is_malicious = res["is_malicious"]
+                    learning_buffer.add_sample(domain, feature_vector, is_malicious)
+                    # 检查是否需要更新模型
+                    model, scaler = online_update_model(model, scaler, learning_buffer, args.model)
+                
+                if res["is_malicious"]:
+                    status = "[恶意]"
+                    malicious_domains.append(res)
+                elif res["is_suspicious"]:
+                    status = "[可疑]"
+                    suspicious_domains.append(res)
+                else:
+                    status = "[正常]"
+                
+                reason = res["reason"]
+                if res.get('ml_prediction') is not None:
+                    ml_label = '恶意' if res['ml_prediction'] else '正常'
+                    reason += f" | ML: {ml_label} ({res['ml_confidence']:.2f})"
+                
+                print(f"{domain:<45} {status:<10} {reason}")
+            
+            # 总结报告
+            print("\n" + "="*80)
+            print("【检测总结】")
+            print("="*80)
+            print(f"总域名数: {filter_result['total_count']}")
+            print(f"初步筛选安全: {filter_result['filtered_count']}")
+            print(f"精密研判: {len(suspicious_domains_list)}")
+            print(f"  - 恶意域名: {len(malicious_domains)}")
+            print(f"  - 可疑域名: {len(suspicious_domains)}")
+            print(f"  - 正常域名: {len(suspicious_domains_list) - len(malicious_domains) - len(suspicious_domains)}")
+            
+            if malicious_domains:
+                print(f"\n发现{len(malicious_domains)}个恶意域名:")
+                for item in malicious_domains:
+                    print(f"  - {item['domain']}: {item['reason']}")
+        
+        else:
+            print("\n请使用 --two-stage 参数进行两级检测")
+            print("或使用 --input 和 --detect 参数导入PCAP文件进行检测")
     
-    # 4. 训练模型
-    print("\n开始训练模型...")
-    model = train_model(labeled_data)
+    # 生成训练数据
+    if args.generate:
+        generate_training_data(args.generate, args.output, args.label)
+        return
     
-    return model
+    # 训练模型
+    if args.train:
+        train_model(args.train, args.model)
+        return
+    
+    if not any([args.predict, args.input, args.generate, args.train]):
+        parser.print_help()
 
-# 自动标注域名（基于黑名单和特征）
-def auto_label_domains(domains):
-    # 恶意域名黑名单
-    MALICIOUS_DOMAINS = {
-        "malware-test.com",
-        "phishing-example.org",
-        "botnet-command.cc",
-        "evil-domain.ru",
-        "ad-tracker.net",
-        "fake-bank.com"
-    }
-    
-    # 可疑特征
-    SUSPICIOUS_PATTERNS = [
-        re.compile(r'\d{5,}'),
-        re.compile(r'[a-z0-9]{20,}'),
-        re.compile(r'xn--'),
-        re.compile(r'\.top$'),
-        re.compile(r'\.work$'),
-        re.compile(r'\.club$')
-    ]
-    
-    labeled_data = []
-    for domain in domains:
-        # 检查黑名单
-        if domain in MALICIOUS_DOMAINS:
-            labeled_data.append((domain, 1))
-            continue
-        
-        # 检查可疑特征
-        is_suspicious = False
-        for pattern in SUSPICIOUS_PATTERNS:
-            if pattern.search(domain):
-                is_suspicious = True
-                break
-        
-        if is_suspicious:
-            labeled_data.append((domain, 1))
-        else:
-            labeled_data.append((domain, 0))
-    
-    print(f"自动标注完成：正常域名 {sum(1 for _, label in labeled_data if label == 0)} 个，恶意域名 {sum(1 for _, label in labeled_data if label == 1)} 个")
-    return labeled_data
-# 加载模型
-def load_model():
-    try:
-        model = joblib.load('dns_malware_model.pkl')
-        return model
-    except FileNotFoundError:
-        print("模型文件不存在，正在搭建新模型...")
-        return train_model()
-# 预测函数
-def predict_domain(model, domain):
-    # 提取特征
-    feat = extract_features(domain)
-    # 转换为DataFrame
-    feat_df = pd.DataFrame([feat])
-    # 处理分类特征（TLD）
-    # 手动创建与训练时一致的特征列
-    # 先只使用数值特征，避免TLD编码问题
-    numeric_features = ['length', 'digit_ratio', 'special_chars', 'subdomains', 'has_long_random', 'has_idn']
-    # 确保只包含数值特征
-    feat_df = feat_df[numeric_features]
-    # 预测
-    prediction = model.predict(feat_df)[0]
-    probability = model.predict_proba(feat_df)[0][1]
-    return {
-        'domain': domain,
-        'is_malicious': bool(prediction),
-        'confidence': probability
-    }
-if __name__ == "__main__":
-    import sys
-    
-    # 检查命令行参数
-    if len(sys.argv) > 1 and sys.argv[1] == "--pcapng":
-        # 使用pcapng文件训练模型
-        if len(sys.argv) < 3:
-            print("使用方法：python dns_ml_model.py --pcapng <pcapng文件> [--label <标注文件>] [--auto]")
-            print("  --pcapng: 指定pcapng文件路径")
-            print("  --label:  指定标注文件路径（可选）")
-            print("  --auto:   使用自动标注（可选）")
-            sys.exit(1)
-        
-        pcapng_file = sys.argv[2]
-        label_file = None
-        auto_label = False
-        
-        # 解析可选参数
-        for i in range(3, len(sys.argv)):
-            if sys.argv[i] == "--label" and i + 1 < len(sys.argv):
-                label_file = sys.argv[i + 1]
-            elif sys.argv[i] == "--auto":
-                auto_label = True
-        
-        # 从pcapng文件训练模型
-        model = train_from_pcapng(pcapng_file, label_file, auto_label)
-        
-        if model:
-            print("\n模型训练完成！")
-        else:
-            print("\n模型训练失败！")
-    else:
-        # 训练模型（使用默认数据集）
-        model = train_model()
-        # 测试预测
-        test_domains = [
-            'www.baidu.com',
-            'malware-test.com',
-            'random123456789abc.top',
-            'github.com',
-            'xn--80ak6aa92e.com'
-        ]
-        print("\n测试预测结果：")
-        for domain in test_domains:
-            result = predict_domain(model, domain)
-            print(f"域名: {domain}")
-            print(f"是否恶意: {'是' if result['is_malicious'] else '否'}")
-            print(f"置信度: {result['confidence']:.2f}")
-            print()
+if __name__ == '__main__':
+    main()
