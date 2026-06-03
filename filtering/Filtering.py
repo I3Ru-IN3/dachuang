@@ -354,15 +354,18 @@ def add_packet_to_group(packet,group):
 
 def main():
     capture_cfg = config._config.get('capture', {})
-    iface = capture_cfg.get('interface')
-    if not iface:
-        logging.error("未在配置文件中指定网络接口")
+    ifacd_index = capture_cfg.get('interface_index', None)
+    try:
+        iface = IFACES.dev_from_index(ifacd_index)
+    except Exception as e:
+        logging.error(f"无法找到指定的网络接口索引 {ifacd_index}: {e}")
         return
+
 
     timeout = capture_cfg.get('timeout', 0)
     pcap_file = capture_cfg.get('pcap_file', None)
     offline_mode = capture_cfg.get('offline_mode', False)
-    logging.info(f"开始抓包，接口: {iface}, 超时: {timeout}s, 数量: {count}")
+    logging.info(f"开始抓包，接口: {iface}, 超时: {timeout}s")
 
 
 

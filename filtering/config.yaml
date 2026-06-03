@@ -7,7 +7,7 @@ debug:
 
 # 抓包参数
 capture:
-  interface: "Intel(R) Wireless-AC 9462"   # 网卡名称（Windows用引号括住特殊字符）
+  interface_index: 19                     # 网卡编号
   #promiscuous: false                       # 混杂模式
   timeout: 5                              # 运行时间（秒），0表示无限
   packet_count: 0                          # 抓包数量，0表示无限制
