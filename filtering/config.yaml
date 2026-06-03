@@ -1,0 +1,30 @@
+# 流量分析器配置文件
+# 使用方式：在代码中加载并读取
+
+# 调试相关
+debug:
+
+
+# 抓包参数
+capture:
+  interface: "Intel(R) Wireless-AC 9462"   # 网卡名称（Windows用引号括住特殊字符）
+  #promiscuous: false                       # 混杂模式
+  timeout: 5                              # 运行时间（秒），0表示无限
+  packet_count: 0                          # 抓包数量，0表示无限制
+  filter: ""                               # BPF过滤器，如 "tcp port 80"
+  offline_mode: true                        # 是否从pcap文件读取数据
+  pcap_file: "filtering/noise.pcapng"                   # 离线模式下的pc
+
+# 分析参数
+analysis:
+  tcp_only: false
+  save_pcap: true
+  output_file: "captured.pcap"
+
+# 日志配置
+logging:
+  enabled: true                # 是否开启调试日志
+  level: INFO                # DEBUG/INFO/WARNING/ERROR
+  file: "sniffer.log"
+  max_bytes: 10485760   # 10 MB
+  backup_count: 5

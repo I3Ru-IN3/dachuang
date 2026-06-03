@@ -4,6 +4,7 @@ from scapy.layers.dns import DNS, DNSQR
 from itertools import groupby
 from collections import defaultdict
 from rich import print
+from config_loader import config
 
 import csv
 import sys
@@ -12,14 +13,22 @@ import dns.rdata
 import socket
 import logging
 
-logging.basicConfig(level=logging.DEBUG)
 
+config.load("filtering/config.yaml")  # 加载配置文件
 burst_filter=defaultdict(list)
 cold_filter=defaultdict(list)
 BUKET_SIZE = 100
-def default0():
-    return 0
-burst_filter_info=defaultdict(default0) #记录每个桶曾经存储过的最大数据量
+burst_filter_info=defaultdict(lambda :0) #记录每个桶曾经存储过的最大数据量
+def setup_logging():
+    log_enabled = config.get('logging.enabled', True)
+
+    if not log_enabled:
+        logging.disable(logging.CRITICAL)  # 禁止所有日志输出
+        return
+    
+    log_level = config.get('logging.level', 'INFO')
+    logging.basicConfig(level=getattr(logging,log_level), format='%(asctime)s - %(levelname)s - %(message)s')
+setup_logging()  # 初始化日志系统
 
 def decode_txt_rdata(rdata_bytes):
     """手动解码 TXT 的 rdata（标准格式：长度+文本，可多段）"""
@@ -342,19 +351,34 @@ def add_packet_to_group(packet,group):
         return
 
 
-if __name__ == "__main__":
-    # 替换为实际 PCAP 文件路径
 
-    pcap_file = "filtering/noise.pcapng"
+def main():
+    capture_cfg = config._config.get('capture', {})
+    iface = capture_cfg.get('interface')
+    if not iface:
+        logging.error("未在配置文件中指定网络接口")
+        return
+
+    timeout = capture_cfg.get('timeout', 0)
+    pcap_file = capture_cfg.get('pcap_file', None)
+    offline_mode = capture_cfg.get('offline_mode', False)
+    logging.info(f"开始抓包，接口: {iface}, 超时: {timeout}s, 数量: {count}")
+
+
+
+
     # valid_packets = filter_dns_packets(pcap_file)#过滤出有效的DNS数据包
     # print(f"过滤后得到 {len(valid_packets)} 个有效 DNS 数据包")
     # dns_infos = extract_dns_info(valid_packets)#筛选出dns数据信息
 
 
     group = []
-    #IFACES.show()
-    sniff(prn=lambda pkt: add_packet_to_group(pkt, group), store=0,timeout = 60,iface=IFACES.dev_from_index(19))#将数据包逐个传入add_packet_to_group函数进行过滤器更新
-    #sniff(prn=lambda pkt: add_packet_to_group(pkt, group), store=0,timeout = 5,offline="filtering/noise.pcapng")#将数据包逐个传入add_packet_to_group函数进行过滤器更新
+
+    if offline_mode:
+        sniff(prn=lambda pkt: add_packet_to_group(pkt, group), store=0,timeout = timeout,offline=pcap_file)#将数据包逐个传入add_packet_to_group函数进行过滤器更新
+    else:
+        sniff(prn=lambda pkt: add_packet_to_group(pkt, group), store=0,timeout = timeout,iface=IFACES.dev_from_index(19))#将数据包逐个传入add_packet_to_group函数进行过滤器更新
+    
     if group:#处理最后一组数据
         add_group_to_filters(group)#将group列表添加到过滤器中
         group.clear()#清空group
@@ -363,3 +387,7 @@ if __name__ == "__main__":
     # print(cold_filter)
     print(burst_filter)
     print(cold_filter)
+
+if __name__ == "__main__":
+    main()
+
