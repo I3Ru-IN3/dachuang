@@ -12,6 +12,8 @@ import xxhash
 import dns.rdata
 import socket
 import logging
+import time
+import threading
 
 
 config.load("filtering/config.yaml")  # 加载配置文件
@@ -19,6 +21,53 @@ burst_filter=defaultdict(list)
 cold_filter=defaultdict(list)
 BUKET_SIZE = 100
 burst_filter_info=defaultdict(lambda :0) #记录每个桶曾经存储过的最大数据量
+
+class PacketGrouper:
+    """将原始包聚合成 group，按条件触发处理"""
+    def __init__(self, group_size=50, timeout=1.0, callback=None):
+        self.group = []
+        self.group_size = group_size
+        self.timeout = timeout
+        self.callback = callback      # 当 group 准备好时调用的函数
+        self.buffer = []
+        self.last_flush = time.time()
+        self.lock = threading.Lock()
+
+    def add(self, packet):
+        with self.lock:
+            if not filter_dns_packets([packet]):#如果数据包不满足过滤条件
+                return
+            self.buffer.append(packet)
+            if len(self.buffer) >= self.group_size:
+                self._flush()
+            else:
+                # 检查超时（可以在独立线程中定期检查，这里简化）
+                pass
+
+    def _flush(self):
+        if not self.buffer:#如果缓冲区为空，则不进行处理
+            return
+        #如果缓冲区不为空，将buffer传入group，并清空buffer重置计时
+
+        self.group = extract_dns_info(self.buffer)#提取数据包中的dns信息
+        self.buffer.clear()
+        self.last_flush = time.time()
+
+        if self.callback:
+            self.callback(self.group)
+
+    def start_timeout_checker(self):
+        """启动一个线程定期检查超时"""
+        def check():
+            while True:
+                time.sleep(self.timeout)
+                #每隔timeout秒检查一次，若满足条件则启用flush函数
+                with self.lock:
+                    if self.buffer and (time.time() - self.last_flush) >= self.timeout:
+                        self._flush()
+        thread = threading.Thread(target=check, daemon=True)
+        thread.start()
+
 def setup_logging():
     log_enabled = config.get('logging.enabled', True)
 
@@ -258,11 +307,12 @@ def extract_dns_info(packets, output_csv=None):
         print(f"[✓] 已保存 {len(results)} 条记录到 {output_csv}")
     else:
         # 打印到控制台，调整列宽
-        print(f"{'Timestamp':<20} {'Client_IP':<16} {'TTL':<5} {'Payload_Size':<10} {'Domain':<35} {'Record_Type'}{'RData'}")
-        print("-" * 95)
-        for row in results:
-            domain_str = str(row['Domain'])[:35] if row['Domain'] else 'None'
-            print(f"{row['Timestamp']:<20.6f} {row['Client_IP']:<16} {row['TTL']:<5} {row['Payload_Size']:<10} {domain_str:<35} {row['Record_Type']}{row['RData']}")
+        # print(f"{'Timestamp':<20} {'Client_IP':<16} {'TTL':<5} {'Payload_Size':<10} {'Domain':<35} {'Record_Type'}{'RData'}")
+        # print("-" * 95)
+        # for row in results:
+        #     domain_str = str(row['Domain'])[:35] if row['Domain'] else 'None'
+        #     print(f"{row['Timestamp']:<20.6f} {row['Client_IP']:<16} {row['TTL']:<5} {row['Payload_Size']:<10} {domain_str:<35} {row['Record_Type']}{row['RData']}")
+        pass
 
     return results
 
@@ -339,7 +389,7 @@ def add_packet_to_group(packet,group):
     '''
 
     if not filter_dns_packets([packet]):#如果数据包不满足过滤条件
-        logging.debug("数据包不满足过滤条件，已跳过")#打印提示信息
+        #logging.debug("数据包不满足过滤条件，已跳过")#打印提示信息
         return
 
     dnsinfos = extract_dns_info([packet])#提取数据包中的dns信息
@@ -376,11 +426,13 @@ def main():
 
 
     group = []
+    grouper = PacketGrouper(group_size=1000, timeout=1, callback=add_group_to_filters)
+    grouper.start_timeout_checker()  # 启动超时检查线程
 
     if offline_mode:
-        sniff(prn=lambda pkt: add_packet_to_group(pkt, group), store=0,timeout = timeout,offline=pcap_file)#将数据包逐个传入add_packet_to_group函数进行过滤器更新
+        sniff(prn=lambda pkt: grouper.add(pkt), store=0,timeout = timeout,offline=pcap_file)#将数据包逐个传入add_packet_to_group函数进行过滤器更新
     else:
-        sniff(prn=lambda pkt: add_packet_to_group(pkt, group), store=0,timeout = timeout,iface=IFACES.dev_from_index(19))#将数据包逐个传入add_packet_to_group函数进行过滤器更新
+        sniff(prn=lambda pkt: grouper.add(pkt), store=0,timeout = timeout,iface=IFACES.dev_from_index(19))#将数据包逐个传入add_packet_to_group函数进行过滤器更新
     
     if group:#处理最后一组数据
         add_group_to_filters(group)#将group列表添加到过滤器中

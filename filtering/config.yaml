@@ -24,7 +24,7 @@ analysis:
 # 日志配置
 logging:
   enabled: true                # 是否开启调试日志
-  level: INFO                # DEBUG/INFO/WARNING/ERROR
+  level: DEBUG                # DEBUG/INFO/WARNING/ERROR
   file: "sniffer.log"
   max_bytes: 10485760   # 10 MB
   backup_count: 5
