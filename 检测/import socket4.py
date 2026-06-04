@@ -17,8 +17,8 @@ MALICIOUS_DOMAINS = {
 }
 # 频率异常检测配置
 FREQUENCY_THRESHOLD = 10  # 短时间高频次阈值（次/分钟）
-BURST_THRESHOLD = 5        # 突发访问阈值（次/秒）
-IDLE_BURST_THRESHOLD = 3   # 空闲时突发阈值（次/分钟，用户未使用电脑时）
+BURST_THRESHOLD = 3        # 突发访问阈值（次/秒）
+IDLE_BURST_THRESHOLD = 2   # 空闲时突发阈值（次/分钟，用户未使用电脑时）
 # 高危域名黑名单
 HIGH_RISK_DOMAINS = {
     # 已知恶意软件域名

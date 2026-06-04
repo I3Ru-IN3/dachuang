@@ -15,7 +15,7 @@ SAFE_DOMAINS = {
 SAFE_TLDS = {
     '.com', '.org', '.net', '.edu', '.gov', '.mil',
     '.cn', '.jp', '.de', '.uk', '.fr', '.ru', '.br',
-    '.io', '.co', '.edu.cn', '.gov.cn','.top'
+    '.io', '.co', '.edu.cn', '.gov.cn'
 }
 
 MIN_DOMAIN_ENTROPY = 2.5

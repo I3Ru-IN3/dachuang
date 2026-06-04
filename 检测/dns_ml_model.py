@@ -10,7 +10,7 @@ from collections import Counter
 import numpy as np
 from scapy.all import rdpcap, DNS, DNSQR
 import joblib
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import SGDClassifier
 from sklearn.preprocessing import StandardScaler
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -28,9 +28,9 @@ try:
         USE_JUDGMENT = True
         print(f"成功加载 firstjudgment.py 模块")
     else:
-        print(f"错误: 未找到 firstjudgment.py，无法进行初步研判")
+        print(f"错误: 未找到 firstjudgment.py")
 except Exception as e:
-    print(f"错误: 加载 firstjudgment.py 失败: {e}，无法进行初步研判")
+    print(f"错误: 加载 firstjudgment.py 失败: {e}")
 
 # 尝试加载 import socket4.py 用于精密研判
 try:
@@ -41,9 +41,9 @@ try:
         USE_SOCKET4_FEATURES = True
         print(f"成功加载 import socket4.py 模块")
     else:
-        print(f"错误: 未找到 import socket4.py，无法进行精密研判")
+        print(f"错误: 未找到 import socket4.py")
 except Exception as e:
-    print(f"错误: 加载 import socket4.py 失败: {e}，无法进行精密研判")
+    print(f"错误: 加载 import socket4.py 失败: {e}")
 
 FEATURE_NAMES = [
     'length', 'digit_ratio', 'special_chars', 'subdomains',
@@ -173,7 +173,7 @@ def rapid_analysis(domain):
             'can_skip': result.get('can_skip', False)
         }
     else:
-        raise Exception("未加载 firstjudgment.py 模块，无法进行初步研判")
+        raise Exception("未加载 firstjudgment.py ")
 
 def batch_rapid_filter(domains):
     """
@@ -203,7 +203,7 @@ def batch_rapid_filter(domains):
             'filter_rate': len(safe_domains) / len(domains) * 100
         }
     else:
-        raise Exception("未加载 firstjudgment.py 模块，无法进行初步研判")
+        raise Exception("未加载 firstjudgment.py ")
 
 def load_pcap_domains(pcap_path):
     domains = []
@@ -225,13 +225,36 @@ def load_domain_file(file_path):
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             for line in f:
-                domain = line.strip()
-                if domain and not domain.startswith('#'):
-                    domains.append(domain)
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    # 处理CSV格式（只取第一列）
+                    if ',' in line:
+                        domain = line.split(',')[0].strip()
+                    else:
+                        domain = line
+                    if domain:
+                        domains.append(domain)
         return domains
     except Exception as e:
         print(f"Error loading file: {e}")
         return []
+
+def predict_with_model(domain, model, scaler):
+    """使用模型进行预测"""
+    features = extract_domain_features(domain)
+    feature_vector = [features.get(name, 0.0) for name in FEATURE_NAMES]
+    feature_vector = np.array(feature_vector).reshape(1, -1)
+    feature_scaled = scaler.transform(feature_vector)
+    
+    prediction = model.predict(feature_scaled)[0]
+    confidence = model.predict_proba(feature_scaled)[0]
+    
+    return {
+        'prediction': prediction,
+        'confidence': confidence,
+        'malicious_prob': confidence[1],
+        'normal_prob': confidence[0]
+    }
 
 def load_pcap_domains_with_timestamps(pcap_path):
     records = []
@@ -296,15 +319,15 @@ def train_model(train_data_path, model_path):
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     
-    # 训练随机森林模型
-    print("\n训练 Random Forest 模型...")
-    model = RandomForestClassifier(
-        n_estimators=200,
-        max_depth=15,
-        min_samples_split=5,
-        min_samples_leaf=2,
-        random_state=42,
-        n_jobs=-1
+    # 训练 SGD 分类器（支持在线学习）
+    print("\n训练 SGD 分类器...")
+    model = SGDClassifier(
+        loss='log_loss',  # 逻辑回归，支持概率输出
+        penalty='l2',
+        alpha=0.0001,
+        max_iter=1000,
+        tol=1e-3,
+        random_state=42
     )
     model.fit(X_scaled, y)
     
@@ -312,15 +335,54 @@ def train_model(train_data_path, model_path):
     joblib.dump((model, scaler), model_path)
     print(f"\n模型已保存到: {model_path}")
     
-    # 特征重要性
-    print("\n=== 特征重要性 ===")
-    importances = model.feature_importances_
-    indices = np.argsort(importances)[::-1]
+    # 特征系数（权重）
+    print("\n=== 特征权重 ===")
+    coefficients = model.coef_[0]
+    indices = np.argsort(np.abs(coefficients))[::-1]
     for f in range(len(FEATURE_NAMES)):
         idx = indices[f]
-        print(f"{f+1}. {FEATURE_NAMES[idx]}: {importances[idx]:.4f}")
+        print(f"{f+1}. {FEATURE_NAMES[idx]}: {coefficients[idx]:.4f}")
     
     return model, scaler
+
+def run_model_inference(domains, model_path):
+    """运行模型推理"""
+    import joblib
+    try:
+        model, scaler = joblib.load(model_path)
+    except Exception as e:
+        print(f"加载模型失败: {e}")
+        return
+    
+    print("\n" + "="*80)
+    print("【机器学习模型推理】")
+    print("="*80)
+    print(f"域名数量: {len(domains)}")
+    print(f"模型文件: {model_path}")
+    print("\n{:<50} {:<10} {:<15} {:<15}".format("域名", "结果", "恶意概率", "正常概率"))
+    print("-"*80)
+    
+    malicious_count = 0
+    normal_count = 0
+    
+    for domain in domains:
+        result = predict_with_model(domain, model, scaler)
+        label = "恶意" if result['prediction'] == 1 else "正常"
+        
+        if result['prediction'] == 1:
+            malicious_count += 1
+        else:
+            normal_count += 1
+        
+        print("{:<50} {:<10} {:<15.4f} {:<15.4f}".format(
+            domain[:48], label, result['malicious_prob'], result['normal_prob']
+        ))
+    
+    print("\n" + "="*80)
+    print(f"推理结果汇总:")
+    print(f"  恶意域名: {malicious_count} ({malicious_count/len(domains)*100:.2f}%)")
+    print(f"  正常域名: {normal_count} ({normal_count/len(domains)*100:.2f}%)")
+    print("="*80)
 
 def main():
     parser = argparse.ArgumentParser(description='DNS隧道检测 - 两级检测流程')
@@ -335,8 +397,39 @@ def main():
     parser.add_argument('--label', type=int, default=1, help='生成训练数据时的标签(0=正常,1=恶意)')
     parser.add_argument('--output', default='dns_training_data.csv', help='训练数据输出路径')
     parser.add_argument('--predict', help='待检测的域名、文件或PCAP路径')
+    parser.add_argument('--inference', help='使用机器学习模型进行推理（域名、文件或PCAP）')
     
     args = parser.parse_args()
+    
+    # 生成训练数据（优先执行）
+    if args.generate:
+        generate_training_data(args.generate, args.output, args.label)
+        return
+    
+    # 训练模型（优先执行）
+    if args.train:
+        train_model(args.train, args.model)
+        return
+    
+    # 模型推理（优先执行）
+    if args.inference:
+        inference_input = args.inference.strip('"').strip("'")
+        domains = []
+        if os.path.exists(inference_input):
+            ext = inference_input.lower()
+            if ext.endswith('.pcap') or ext.endswith('.pcapng'):
+                domains = load_pcap_domains(inference_input)
+            else:
+                domains = load_domain_file(inference_input)
+        else:
+            domains = [inference_input]
+        
+        if not domains:
+            print("未找到待推理域名")
+            return
+        
+        run_model_inference(domains, args.model)
+        return
     
     if args.input:
         input_path = args.input.strip('"').strip("'")
@@ -640,17 +733,7 @@ def main():
             print("\n请使用 --two-stage 参数进行两级检测")
             print("或使用 --input 和 --detect 参数导入PCAP文件进行检测")
     
-    # 生成训练数据
-    if args.generate:
-        generate_training_data(args.generate, args.output, args.label)
-        return
-    
-    # 训练模型
-    if args.train:
-        train_model(args.train, args.model)
-        return
-    
-    if not any([args.predict, args.input, args.generate, args.train]):
+    if not any([args.predict, args.input, args.generate, args.train, args.inference]):
         parser.print_help()
 
 if __name__ == '__main__':
