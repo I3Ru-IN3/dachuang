@@ -30,7 +30,7 @@ class PacketGrouper:
     def __init__(self, group_size=50, timeout=1.0, callback=None):
         self.group = []
         self.group_size = group_size
-        self.timeout = timeout
+        self.timeout = timeout          #将缓冲区加入group的最大时间间隔
         self.callback = callback      # 当 group 准备好时调用的函数
         self.buffer = []
         self.last_flush = time.time()
@@ -344,39 +344,40 @@ def extract_dns_info(packets, output_csv=None):
 def xxhash32(seed_str: str) -> int:
     return xxhash.xxh32(seed_str.encode()).intdigest()
 def add_hot_item(registered_domain,dnsinfos):
-    '''
-    将提取好的dns关键信息放入热过滤器中。
+    with filer_lock:
+        '''
+        将提取好的dns关键信息放入热过滤器中。
 
-    参数：
-        registered_domain(str):从域名中提取的注册域
-        dnsinfos(list):dnsinfo的列表，包含了同一注册域的多个dns信息
-    '''
-    h = xxhash32(registered_domain)#根据域名提取注册域并计算哈希值
-    l = burst_filter#突发过滤器别名
-    k = h%BUKET_SIZE #将哈希值取余得到过滤器引索
-    c = burst_filter_info #计数列表别名
-    size_of_dnsinfos = len(dnsinfos) #当前dnsinfo的个数
+        参数：
+            registered_domain(str):从域名中提取的注册域
+            dnsinfos(list):dnsinfo的列表，包含了同一注册域的多个dns信息
+        '''
+        h = xxhash32(registered_domain)#根据域名提取注册域并计算哈希值
+        l = burst_filter#突发过滤器别名
+        k = h%BUKET_SIZE #将哈希值取余得到过滤器引索
+        c = burst_filter_info #计数列表别名
+        size_of_dnsinfos = len(dnsinfos) #当前dnsinfo的个数
 
-    if not l[k]:#如果热过滤器中不存在该哈希值，则将dnsinfo添加到对应的列表中
-        l[k].extend(dnsinfos)#将dnsinfos添加到热过滤器中
-        c[k] += size_of_dnsinfos#更新该哈希值对应的计数器，记录当前桶中数据的个数
-        return
-    
-    size = len(l[k]) #读取已有数据的个数
-    if registered_domain == extract_registered_domain(l[k][0]['Registered_Domain']):#如果热过滤器中存在该哈希值,且该哈希值对应的注册域与当前dnsinfo的注册域相同，并且桶尚未到达上限，则将dnsinfo添加到对应的列表中
-        if size <= BUKET_SIZE:
-            l[k].extend(dnsinfos)
-            c[k] += size_of_dnsinfos
-        else:
-            pass
-    else:#如果热过滤器中存在该哈希值，但二级域名不同，那么通过概率来决定保留哪个，另一个则移交给冷过滤器 
-        if h%c[k] == 0:#1/c[k]的概率成功,将已有的列表交给冷过滤器，用新数据将其覆盖
-            add_cold_item(l[k])
-            l[k].clear
-            l[k].extend(dnsinfos)
-            c[k] += size_of_dnsinfos
-        else:#size-1/size的概率失败,将新数据交给冷过滤器
-            add_cold_item(dnsinfos)
+        if not l[k]:#如果热过滤器中不存在该哈希值，则将dnsinfo添加到对应的列表中
+            l[k].extend(dnsinfos)#将dnsinfos添加到热过滤器中
+            c[k] += size_of_dnsinfos#更新该哈希值对应的计数器，记录当前桶中数据的个数
+            return
+        
+        size = len(l[k]) #读取已有数据的个数
+        if registered_domain == extract_registered_domain(l[k][0]['Registered_Domain']):#如果热过滤器中存在该哈希值,且该哈希值对应的注册域与当前dnsinfo的注册域相同，并且桶尚未到达上限，则将dnsinfo添加到对应的列表中
+            if size <= BUKET_SIZE:
+                l[k].extend(dnsinfos)
+                c[k] += size_of_dnsinfos
+            else:
+                pass
+        else:#如果热过滤器中存在该哈希值，但二级域名不同，那么通过概率来决定保留哪个，另一个则移交给冷过滤器 
+            if h%c[k] == 0:#1/c[k]的概率成功,将已有的列表交给冷过滤器，用新数据将其覆盖
+                add_cold_item(l[k])
+                l[k].clear
+                l[k].extend(dnsinfos)
+                c[k] += size_of_dnsinfos
+            else:#size-1/size的概率失败,将新数据交给冷过滤器
+                add_cold_item(dnsinfos)
     
 
 def add_cold_item(dnsinfos):
@@ -466,11 +467,7 @@ def main():
     else:
         sniff(prn=lambda pkt: grouper.add(pkt), store=0,timeout = timeout,iface=IFACES.dev_from_index(19))#将数据包逐个传入add_packet_to_group函数进行过滤器更新
     
-    if group:#处理最后一组数据
-        with filer_lock:
-            add_group_to_filters(group)#将group列表添加到过滤器中
-        group.clear()#清空group
-
+    print("抓包结束，正在等待定时检测完成...")
     # print(burst_filter)
     # print(cold_filter)
     # print(burst_filter)
