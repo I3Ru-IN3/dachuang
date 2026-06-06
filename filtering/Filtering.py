@@ -21,6 +21,9 @@ burst_filter=defaultdict(list)
 cold_filter=defaultdict(list)
 BUKET_SIZE = 100
 burst_filter_info=defaultdict(lambda :0) #记录每个桶曾经存储过的最大数据量
+"目前为简化设计，过滤器共用一个锁"
+filer_lock = threading.Lock() #过滤器锁，保护对过滤器的访问
+
 
 class PacketGrouper:
     """将原始包聚合成 group，按条件触发处理"""
@@ -66,6 +69,31 @@ class PacketGrouper:
                     if self.buffer and (time.time() - self.last_flush) >= self.timeout:
                         self._flush()
         thread = threading.Thread(target=check, daemon=True)
+        thread.start()
+
+class Detecter:
+    "检测器类，包含检测逻辑和报告生成"
+    def __init__(self,timeout,filter):
+        self.timeout = timeout
+        self.filter = filter
+
+    def detect(self):
+        "检测过滤器中的流量，判断是否可疑，并生成报告"
+        for pkts in self.filter.values():
+            for pkt in pkts:
+                "此处文本仅为示例，实际检测逻辑需要根据具体需求设计"
+                if pkt['Payload_Size'] > 100:  # 示例条件：有效载荷超过 100 字节
+                    print(f"可疑流量检测到: {pkt['Domain']} (Payload Size: {pkt['Payload_Size']} bytes)")
+
+    def start_timer(self):
+        "定时器函数，每隔timeout秒调用一次detect方法进行检测"
+        def timer():
+            while True:
+                time.sleep(self.timeout)
+                logging.info(f"定时检测触发，正在检查过滤器中的流量...")
+                with filer_lock:#加锁保护对过滤器的访问
+                    self.detect()
+        thread = threading.Thread(target=timer, daemon=True)
         thread.start()
 
 def setup_logging():
@@ -196,13 +224,10 @@ def filter_dns_packets(pcap_path_or_packets):
                         continue
                 # 如果没有 qd 字段，也跳过
                 else:
-                    logging.debug("数据包的 DNS 层缺少问题段，已跳过")
                     continue
             else:
-                logging.debug("数据包的 DNS 层缺少有效的 QR 标志或 qdcount 不为 1，已跳过")
                 continue
         else:
-            logging.debug("数据包不含有 IP、UDP 和 DNS 层，或 DNS 层缺少问题段，已跳过")
             continue
     
     return filtered_packets
@@ -396,8 +421,9 @@ def add_packet_to_group(packet,group):
 
     group.extend(dnsinfos)#以（注册域，dnsinfo）的形式将数据添加到group中
     if len(group) == 1000:#每1000条数据为一组，进行一次过滤器的更新
-        add_group_to_filters(group)#将group列表添加到过滤器中
-        group.clear()#清空group，为下一组数据做准备
+        with filer_lock:  
+            add_group_to_filters(group)#将group列表添加到过滤器中
+            group.clear()#清空group，为下一组数据做准备
         return
 
 
@@ -428,6 +454,12 @@ def main():
     group = []
     grouper = PacketGrouper(group_size=1000, timeout=1, callback=add_group_to_filters)
     grouper.start_timeout_checker()  # 启动超时检查线程
+    
+    burst_detecter = Detecter(timeout=5, filter=burst_filter)
+    burst_detecter.start_timer()  # 启动定时检测线程
+    cold_detecter = Detecter(timeout=10, filter=cold_filter)
+    cold_detecter.start_timer()  # 启动定时检测线程
+
 
     if offline_mode:
         sniff(prn=lambda pkt: grouper.add(pkt), store=0,timeout = timeout,offline=pcap_file)#将数据包逐个传入add_packet_to_group函数进行过滤器更新
@@ -435,13 +467,14 @@ def main():
         sniff(prn=lambda pkt: grouper.add(pkt), store=0,timeout = timeout,iface=IFACES.dev_from_index(19))#将数据包逐个传入add_packet_to_group函数进行过滤器更新
     
     if group:#处理最后一组数据
-        add_group_to_filters(group)#将group列表添加到过滤器中
+        with filer_lock:
+            add_group_to_filters(group)#将group列表添加到过滤器中
         group.clear()#清空group
 
     # print(burst_filter)
     # print(cold_filter)
-    print(burst_filter)
-    print(cold_filter)
+    # print(burst_filter)
+    # print(cold_filter)
 
 if __name__ == "__main__":
     main()

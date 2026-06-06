@@ -9,11 +9,11 @@ debug:
 capture:
   interface_index: 19                     # 网卡编号
   #promiscuous: false                       # 混杂模式
-  timeout: 5                              # 运行时间（秒），0表示无限
+  timeout: 120                              # 运行时间（秒），0表示无限
   packet_count: 0                          # 抓包数量，0表示无限制
   filter: ""                               # BPF过滤器，如 "tcp port 80"
   offline_mode: true                        # 是否从pcap文件读取数据
-  pcap_file: "filtering/noise.pcapng"                   # 离线模式下的pc
+  pcap_file: "filtering/cobalt_strike_1.pcapng"                   # 离线模式下的pc
 
 # 分析参数
 analysis:
