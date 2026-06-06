@@ -17,7 +17,6 @@ import threading
 
 
 config.load("filtering/config.yaml")  # 加载配置文件
-burst_filter=defaultdict(list)
 cold_filter=defaultdict(list)
 BUKET_SIZE = 100
 burst_filter_info=defaultdict(lambda :0) #记录每个桶曾经存储过的最大数据量
@@ -96,6 +95,50 @@ class Detecter:
         thread = threading.Thread(target=timer, daemon=True)
         thread.start()
 
+class BurstFilterEngine:
+    "过滤器引擎类，包含热过滤器和冷过滤器的管理逻辑"
+    def __init__(self):
+        self.burst_filter = defaultdict(list)
+        self.lock = threading.Lock()
+
+    def add_dnsinfos(self,dnsinfos):
+        '''
+        将提取好的dns关键信息放入热过滤器中。
+
+        参数：
+            registered_domain(str):从域名中提取的注册域
+            dnsinfos(list):dnsinfo的列表，包含了同一注册域的多个dns信息
+        '''
+        dnsinfos.sort(key=lambda x: x['Registered_Domain'])#对每组数据按照域名进行排序，保证同一注册域的数据在一起
+        for registered_domain,dns_info_group in groupby(dnsinfos, key=lambda x: x['Registered_Domain']):
+            with filer_lock:
+                group = list(dns_info_group)#将groupby对象转换为列表
+                h = xxhash32(registered_domain)#根据域名提取注册域并计算哈希值
+                l = self.burst_filter#突发过滤器别名
+                k = h%BUKET_SIZE #将哈希值取余得到过滤器引索
+                c = burst_filter_info #计数列表别名
+                size_of_group = len(group) #当前group的个数
+
+                if not l[k]:#如果热过滤器中不存在该哈希值，则将group添加到对应的列表中
+                    l[k].extend(group)#将group添加到热过滤器中
+                    c[k] += size_of_group#更新该哈希值对应的计数器，记录当前桶中数据的个数
+                    return
+                
+                size = len(l[k]) #读取已有数据的个数
+                if registered_domain == extract_registered_domain(l[k][0]['Registered_Domain']):#如果热过滤器中存在该哈希值,且该哈希值对应的注册域与当前group的注册域相同，并且桶尚未到达上限，则将dnsinfo添加到对应的列表中
+                    if size <= BUKET_SIZE:
+                        l[k].extend(group)
+                        c[k] += size_of_group
+                    else:
+                        pass
+                else:#如果热过滤器中存在该哈希值，但二级域名不同，那么通过概率来决定保留哪个，另一个则移交给冷过滤器 
+                    if h%c[k] == 0:#1/c[k]的概率成功,将已有的列表交给冷过滤器，用新数据将其覆盖
+                        add_cold_item(l[k])
+                        l[k].clear
+                        l[k].extend(group)
+                        c[k] += size_of_group
+                    else:#size-1/size的概率失败,将新数据交给冷过滤器
+                        add_cold_item(group)
 def setup_logging():
     log_enabled = config.get('logging.enabled', True)
 
@@ -343,42 +386,6 @@ def extract_dns_info(packets, output_csv=None):
 
 def xxhash32(seed_str: str) -> int:
     return xxhash.xxh32(seed_str.encode()).intdigest()
-def add_hot_item(registered_domain,dnsinfos):
-    with filer_lock:
-        '''
-        将提取好的dns关键信息放入热过滤器中。
-
-        参数：
-            registered_domain(str):从域名中提取的注册域
-            dnsinfos(list):dnsinfo的列表，包含了同一注册域的多个dns信息
-        '''
-        h = xxhash32(registered_domain)#根据域名提取注册域并计算哈希值
-        l = burst_filter#突发过滤器别名
-        k = h%BUKET_SIZE #将哈希值取余得到过滤器引索
-        c = burst_filter_info #计数列表别名
-        size_of_dnsinfos = len(dnsinfos) #当前dnsinfo的个数
-
-        if not l[k]:#如果热过滤器中不存在该哈希值，则将dnsinfo添加到对应的列表中
-            l[k].extend(dnsinfos)#将dnsinfos添加到热过滤器中
-            c[k] += size_of_dnsinfos#更新该哈希值对应的计数器，记录当前桶中数据的个数
-            return
-        
-        size = len(l[k]) #读取已有数据的个数
-        if registered_domain == extract_registered_domain(l[k][0]['Registered_Domain']):#如果热过滤器中存在该哈希值,且该哈希值对应的注册域与当前dnsinfo的注册域相同，并且桶尚未到达上限，则将dnsinfo添加到对应的列表中
-            if size <= BUKET_SIZE:
-                l[k].extend(dnsinfos)
-                c[k] += size_of_dnsinfos
-            else:
-                pass
-        else:#如果热过滤器中存在该哈希值，但二级域名不同，那么通过概率来决定保留哪个，另一个则移交给冷过滤器 
-            if h%c[k] == 0:#1/c[k]的概率成功,将已有的列表交给冷过滤器，用新数据将其覆盖
-                add_cold_item(l[k])
-                l[k].clear
-                l[k].extend(dnsinfos)
-                c[k] += size_of_dnsinfos
-            else:#size-1/size的概率失败,将新数据交给冷过滤器
-                add_cold_item(dnsinfos)
-    
 
 def add_cold_item(dnsinfos):
     '''
@@ -396,39 +403,6 @@ def add_cold_item(dnsinfos):
     l[registered_domain].extend(list)#将被淘汰的数据添加到冷过滤器中
     
     
-def add_group_to_filters(group):
-    '''
-    将dnsinfo列表通过group分组后添加到过滤器中。
-    参数：
-        group(list):dnsinfo列表
-    '''
-    group.sort(key=lambda x: x['Registered_Domain'])#对每组数据按照域名进行排序，保证同一注册域的数据在一起
-    for registered_domain,dns_info_group in groupby(group, key=lambda x: x['Registered_Domain']):
-        add_hot_item(registered_domain,list(dns_info_group))#注册域与dns信息组传入add_hot_item函数进行过滤器更新
-
-
-def add_packet_to_group(packet,group):
-    '''
-    将数据包提取出的dnsinfo添加到group中。
-    参数：
-        packet:数据包
-    '''
-
-    if not filter_dns_packets([packet]):#如果数据包不满足过滤条件
-        #logging.debug("数据包不满足过滤条件，已跳过")#打印提示信息
-        return
-
-    dnsinfos = extract_dns_info([packet])#提取数据包中的dns信息
-
-    group.extend(dnsinfos)#以（注册域，dnsinfo）的形式将数据添加到group中
-    if len(group) == 1000:#每1000条数据为一组，进行一次过滤器的更新
-        with filer_lock:  
-            add_group_to_filters(group)#将group列表添加到过滤器中
-            group.clear()#清空group，为下一组数据做准备
-        return
-
-
-
 def main():
     capture_cfg = config._config.get('capture', {})
     ifacd_index = capture_cfg.get('interface_index', None)
@@ -444,22 +418,15 @@ def main():
     offline_mode = capture_cfg.get('offline_mode', False)
     logging.info(f"开始抓包，接口: {iface}, 超时: {timeout}s")
 
+    brust_filter_engine = BurstFilterEngine()#实例化过滤器引擎
 
-
-
-    # valid_packets = filter_dns_packets(pcap_file)#过滤出有效的DNS数据包
-    # print(f"过滤后得到 {len(valid_packets)} 个有效 DNS 数据包")
-    # dns_infos = extract_dns_info(valid_packets)#筛选出dns数据信息
-
-
-    group = []
-    grouper = PacketGrouper(group_size=1000, timeout=1, callback=add_group_to_filters)
+    grouper = PacketGrouper(group_size=1000, timeout=1, callback=brust_filter_engine.add_dnsinfos)
     grouper.start_timeout_checker()  # 启动超时检查线程
     
-    burst_detecter = Detecter(timeout=5, filter=burst_filter)
+    burst_detecter = Detecter(timeout=5, filter=brust_filter_engine.burst_filter)
     burst_detecter.start_timer()  # 启动定时检测线程
     cold_detecter = Detecter(timeout=10, filter=cold_filter)
-    cold_detecter.start_timer()  # 启动定时检测线程
+    #cold_detecter.start_timer()  # 启动定时检测线程
 
 
     if offline_mode:
