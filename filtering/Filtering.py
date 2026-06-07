@@ -112,9 +112,9 @@ class BurstFilterEngine:
             registered_domain(str):从域名中提取的注册域
             dnsinfos(list):dnsinfo的列表，包含了同一注册域的多个dns信息
         '''
-        dnsinfos.sort(key=lambda x: x['Registered_Domain'])#对每组数据按照域名进行排序，保证同一注册域的数据在一起
-        for registered_domain,dns_info_group in groupby(dnsinfos, key=lambda x: x['Registered_Domain']):
-            with filer_lock:
+        with filer_lock:
+            dnsinfos.sort(key=lambda x: x['Registered_Domain'])#对每组数据按照域名进行排序，保证同一注册域的数据在一起
+            for registered_domain,dns_info_group in groupby(dnsinfos, key=lambda x: x['Registered_Domain']):
                 group = list(dns_info_group)#将groupby对象转换为列表
                 h = xxhash32(registered_domain)#根据域名提取注册域并计算哈希值
                 l = self.burst_filter#突发过滤器别名
@@ -385,6 +385,9 @@ def extract_dns_info(packets, output_csv=None):
         #     print(f"{row['Timestamp']:<20.6f} {row['Client_IP']:<16} {row['TTL']:<5} {row['Payload_Size']:<10} {domain_str:<35} {row['Record_Type']}{row['RData']}")
         pass
 
+        if domain == "p2p-hkg1.discovery.steamserver.net.":
+            breakpoint()
+
     return results
 
 def xxhash32(seed_str: str) -> int:
@@ -429,7 +432,7 @@ def main():
     burst_detecter = Detecter(timeout=5, filter=brust_filter_engine.burst_filter)
     burst_detecter.start_timer()  # 启动定时检测线程
     cold_detecter = Detecter(timeout=10, filter=cold_filter)
-    cold_detecter.start_timer()  # 启动定时检测线程
+    #cold_detecter.start_timer()  # 启动定时检测线程
 
 
     if offline_mode:
