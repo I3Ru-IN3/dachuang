@@ -125,7 +125,7 @@ class BurstFilterEngine:
                 if not l[k]:#如果热过滤器中不存在该哈希值，则将group添加到对应的列表中
                     l[k].extend(group)#将group添加到热过滤器中
                     c[k] += size_of_group#更新该哈希值对应的计数器，记录当前桶中数据的个数
-                    return
+                    continue
                 
                 size = len(l[k]) #读取已有数据的个数
                 if registered_domain == extract_registered_domain(l[k][0]['Registered_Domain']):#如果热过滤器中存在该哈希值,且该哈希值对应的注册域与当前group的注册域相同，并且桶尚未到达上限，则将dnsinfo添加到对应的列表中
@@ -358,6 +358,9 @@ def extract_dns_info(packets, output_csv=None):
         #5. 主机端ip
         client_ip = pkt[IP].src
 
+        # if domain == "p2p-hkg1.discovery.steamserver.net.":
+        #     breakpoint()
+
         results.append({
             'Timestamp': timestamp,
             'TTL': ttl,
@@ -385,8 +388,6 @@ def extract_dns_info(packets, output_csv=None):
         #     print(f"{row['Timestamp']:<20.6f} {row['Client_IP']:<16} {row['TTL']:<5} {row['Payload_Size']:<10} {domain_str:<35} {row['Record_Type']}{row['RData']}")
         pass
 
-        if domain == "p2p-hkg1.discovery.steamserver.net.":
-            breakpoint()
 
     return results
 
