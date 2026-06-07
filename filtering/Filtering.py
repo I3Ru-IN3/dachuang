@@ -23,6 +23,7 @@ burst_filter_info=defaultdict(lambda :0) #记录每个桶曾经存储过的最�
 "目前为简化设计，过滤器共用一个锁"
 filer_lock = threading.Lock() #过滤器锁，保护对过滤器的访问
 
+packet_count = 0
 
 class PacketGrouper:
     """将原始包聚合成 group，按条件触发处理"""
@@ -36,6 +37,8 @@ class PacketGrouper:
         self.lock = threading.Lock()
 
     def add(self, packet):
+        global packet_count
+        packet_count += 1
         with self.lock:
             if not filter_dns_packets([packet]):#如果数据包不满足过滤条件
                 return
@@ -426,7 +429,7 @@ def main():
     burst_detecter = Detecter(timeout=5, filter=brust_filter_engine.burst_filter)
     burst_detecter.start_timer()  # 启动定时检测线程
     cold_detecter = Detecter(timeout=10, filter=cold_filter)
-    #cold_detecter.start_timer()  # 启动定时检测线程
+    cold_detecter.start_timer()  # 启动定时检测线程
 
 
     if offline_mode:
@@ -434,7 +437,7 @@ def main():
     else:
         sniff(prn=lambda pkt: grouper.add(pkt), store=0,timeout = timeout,iface=IFACES.dev_from_index(19))#将数据包逐个传入add_packet_to_group函数进行过滤器更新
     
-    print("抓包结束，正在等待定时检测完成...")
+    print(f"抓包结束，共处理 抓取{packet_count} 个数据包")
     # print(burst_filter)
     # print(cold_filter)
     # print(burst_filter)
