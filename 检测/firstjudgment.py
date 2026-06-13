@@ -2,28 +2,12 @@ import re
 import math
 from collections import Counter
 from scapy.all import rdpcap, DNS
+from whitelist import SAFE_DOMAINS, safe_domain
 
-SAFE_DOMAINS = {
-    'google.com', 'baidu.com', 'qq.com', 'taobao.com', 'jd.com',
-    'alibaba.com', 'tencent.com', 'microsoft.com', 'apple.com',
-    'amazon.com', 'facebook.com', 'twitter.com', 'instagram.com',
-    'youtube.com', 'wikipedia.org', 'baidu.cn', 'sina.com.cn',
-    'sohu.com', '163.com', '126.com', 'outlook.com', 'live.com',
-    'office.com', 'aliyun.com', 'cloud.tencent.com'
-}
-
-SAFE_TLDS = {
-    '.com', '.org', '.net', '.edu', '.gov', '.mil',
-    '.cn', '.jp', '.de', '.uk', '.fr', '.ru', '.br',
-    '.io', '.co', '.edu.cn', '.gov.cn'
-}
-
-MIN_DOMAIN_ENTROPY = 2.5
 MAX_DOMAIN_ENTROPY = 4.7
 MAX_AVG_SUBDOMAIN_LENGTH = 35
 MAX_MAX_SUBDOMAIN_LENGTH = 55
 MAX_LENGTH_RATIO = 0.5
-MIN_SEGMENTS = 1
 MAX_SEGMENTS = 6
 MAX_CONSECUTIVE_CHARS = 3
 MAX_REPEAT_PATTERNS = 2
@@ -103,12 +87,6 @@ def extract_domain_features(domain):
     features['has_consecutive_chars'] = 1 if has_consecutive_chars(domain) else 0
     return features
 
-def is_safe_tld(domain):
-    return any(domain.endswith(tld) for tld in SAFE_TLDS)
-
-def is_known_safe_domain(domain):
-    return domain.lower() in SAFE_DOMAINS or any(domain.lower().endswith(safe) for safe in SAFE_DOMAINS)
-
 def quick_safety_check(domain):
     result = {
         'domain': domain,
@@ -123,23 +101,11 @@ def quick_safety_check(domain):
         result['risk_score'] += 30
         return result
 
-    if is_known_safe_domain(domain):
+    if safe_domain(domain):
         result['is_safe'] = True
         result['can_skip'] = True
         result['reasons'].append('已知安全域名')
         return result
-
-    if is_safe_tld(domain) and '.' in domain:
-        parts = domain.split('.')
-        if len(parts) >= 2:
-            main_part = parts[-2]
-            if len(main_part) >= 3 and len(main_part) <= 15:
-                if not any(c.isdigit() for c in main_part):
-                    if main_part.lower() == main_part or main_part.capitalize() == main_part:
-                        result['is_safe'] = True
-                        result['can_skip'] = True
-                        result['reasons'].append('常规域名结构')
-                        return result
 
     features = extract_domain_features(domain)
 
@@ -150,10 +116,6 @@ def quick_safety_check(domain):
     if features['is_hex_encoded']:
         result['risk_score'] += 35
         result['reasons'].append('疑似十六进制编码')
-
-    if features['domain_entropy'] < MIN_DOMAIN_ENTROPY:
-        result['risk_score'] += 18
-        result['reasons'].append('熵值过低')
 
     if features['domain_entropy'] > MAX_DOMAIN_ENTROPY:
         result['risk_score'] += 22
@@ -190,10 +152,6 @@ def quick_safety_check(domain):
     if features['subdomains'] > MAX_SEGMENTS:
         result['risk_score'] += 14
         result['reasons'].append('子域名层级过多')
-
-    if not is_safe_tld(domain):
-        result['risk_score'] += 18
-        result['reasons'].append('使用非常见顶级域名')
 
     if result['risk_score'] >= 60:
         result['can_skip'] = False

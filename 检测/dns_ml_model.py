@@ -26,7 +26,7 @@ try:
         loader = importlib.machinery.SourceFileLoader('judgment_module', judgment_path)
         judgment_module = loader.load_module()
         USE_JUDGMENT = True
-        print(f"成功加载 firstjudgment.py 模块")
+
     else:
         print(f"错误: 未找到 firstjudgment.py")
 except Exception as e:
@@ -39,7 +39,7 @@ try:
         loader = importlib.machinery.SourceFileLoader('socket4_module', socket4_path)
         socket4_module = loader.load_module()
         USE_SOCKET4_FEATURES = True
-        print(f"成功加载 import socket4.py 模块")
+
     else:
         print(f"错误: 未找到 import socket4.py")
 except Exception as e:
@@ -220,24 +220,49 @@ def load_pcap_domains(pcap_path):
         print(f"Error loading PCAP: {e}")
         return []
 
-def load_domain_file(file_path):
+def load_domain_file(file_path, with_label=False):
+    """
+    加载域名文件
+    :param file_path: 文件路径
+    :param with_label: 是否返回带label的数据（CSV格式，第二列为label）
+    :return: 域名列表 或 包含(domain, label)的元组列表
+    """
     domains = []
+    labels = []
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith('#'):
-                    # 处理CSV格式（只取第一列）
+                    # 处理CSV格式
                     if ',' in line:
-                        domain = line.split(',')[0].strip()
+                        parts = line.split(',')
+                        domain = parts[0].strip()
+                        if domain:
+                            # 跳过表头
+                            if domain.lower() == 'domain' and len(parts) > 1 and parts[1].lower() == 'length':
+                                continue
+                            domains.append(domain)
+                            if with_label and len(parts) >= 2:
+                                try:
+                                    # 取最后一列作为label
+                                    labels.append(int(parts[-1].strip()))
+                                except:
+                                    labels.append(0)
+                            elif with_label:
+                                labels.append(0)
                     else:
                         domain = line
-                    if domain:
-                        domains.append(domain)
+                        if domain:
+                            domains.append(domain)
+                            if with_label:
+                                labels.append(0)
+        if with_label:
+            return list(zip(domains, labels))
         return domains
     except Exception as e:
         print(f"Error loading file: {e}")
-        return []
+        return [] if not with_label else []
 
 def predict_with_model(domain, model, scaler):
     """使用模型进行预测"""
@@ -308,6 +333,13 @@ def train_model(train_data_path, model_path):
         print(f"加载训练数据失败: {e}")
         return
     
+    # 检查特征列是否存在
+    missing_features = [f for f in FEATURE_NAMES if f not in df.columns]
+    if missing_features:
+        print(f"错误: 缺少以下特征列: {missing_features}")
+        print(f"CSV文件包含的列: {list(df.columns)}")
+        return
+    
     X = df[FEATURE_NAMES].values
     y = df['label'].values
     
@@ -315,9 +347,25 @@ def train_model(train_data_path, model_path):
     print(f"恶意样本: {sum(y)} ({sum(y)/len(y)*100:.2f}%)")
     print(f"正常样本: {len(y)-sum(y)} ({(len(y)-sum(y))/len(y)*100:.2f}%)")
     
+    # 检查是否有缺失值
+    if df[FEATURE_NAMES].isnull().any().any():
+        print("警告: 数据中存在缺失值，将进行填充")
+        df[FEATURE_NAMES] = df[FEATURE_NAMES].fillna(0)
+        X = df[FEATURE_NAMES].values
+    
+    # 检查数据类型
+    print(f"\n特征数据类型: {X.dtype}")
+    print(f"标签数据类型: {y.dtype}")
+    
     # 标准化特征
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+    try:
+        X_scaled = scaler.fit_transform(X)
+    except Exception as e:
+        print(f"特征标准化失败: {e}")
+        return
+    
+    print(f"\n特征维度: {X_scaled.shape}")
     
     # 训练 SGD 分类器（支持在线学习）
     print("\n训练 SGD 分类器...")
@@ -329,14 +377,21 @@ def train_model(train_data_path, model_path):
         tol=1e-3,
         random_state=42
     )
-    model.fit(X_scaled, y)
+    
+    try:
+        model.fit(X_scaled, y)
+    except Exception as e:
+        print(f"模型训练失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return
     
     # 保存模型
     joblib.dump((model, scaler), model_path)
     print(f"\n模型已保存到: {model_path}")
     
     # 特征系数（权重）
-    print("\n=== 特征权重 ===")
+    print("\n【特征权重】")
     coefficients = model.coef_[0]
     indices = np.argsort(np.abs(coefficients))[::-1]
     for f in range(len(FEATURE_NAMES)):
@@ -354,9 +409,7 @@ def run_model_inference(domains, model_path):
         print(f"加载模型失败: {e}")
         return
     
-    print("\n" + "="*80)
-    print("【机器学习模型推理】")
-    print("="*80)
+    print("\n【机器学习模型推理】")
     print(f"域名数量: {len(domains)}")
     print(f"模型文件: {model_path}")
     print("\n{:<50} {:<10} {:<15} {:<15}".format("域名", "结果", "恶意概率", "正常概率"))
@@ -378,15 +431,13 @@ def run_model_inference(domains, model_path):
             domain[:48], label, result['malicious_prob'], result['normal_prob']
         ))
     
-    print("\n" + "="*80)
-    print(f"推理结果汇总:")
+    print("\n推理结果汇总:")
     print(f"  恶意域名: {malicious_count} ({malicious_count/len(domains)*100:.2f}%)")
     print(f"  正常域名: {normal_count} ({normal_count/len(domains)*100:.2f}%)")
-    print("="*80)
 
 def main():
-    parser = argparse.ArgumentParser(description='DNS隧道检测 - 两级检测流程')
-    parser.add_argument('--two-stage', action='store_true', help='使用两级检测流程：初步研判筛选 -> 精密研判')
+    parser = argparse.ArgumentParser(description='DNS隧道检测')
+    parser.add_argument('--two-stage', action='store_true', help='使用检测流程：初步研判筛选 -> 精密研判')
     parser.add_argument('--input', help='导入外部PCAP/PCAPNG/CSV/TXT文件进行检测')
     parser.add_argument('--detect', action='store_true', help='执行检测模式（与--input配合使用）')
     parser.add_argument('--online-learn', action='store_true', help='启用在线学习模式')
@@ -396,7 +447,7 @@ def main():
     parser.add_argument('--train', help='使用CSV训练数据训练模型')
     parser.add_argument('--label', type=int, default=1, help='生成训练数据时的标签(0=正常,1=恶意)')
     parser.add_argument('--output', default='dns_training_data.csv', help='训练数据输出路径')
-    parser.add_argument('--predict', help='待检测的域名、文件或PCAP路径')
+    parser.add_argument('--judge', help='待检测的域名、文件或PCAP路径')
     parser.add_argument('--inference', help='使用机器学习模型进行推理（域名、文件或PCAP）')
     
     args = parser.parse_args()
@@ -440,6 +491,7 @@ def main():
         ext = input_path.lower()
         dns_records = []
         domains = []
+        domain_labels = {}  # 存储域名的真实label
         
         if ext.endswith('.pcap') or ext.endswith('.pcapng'):
             print(f"正在从PCAP文件提取DNS记录: {input_path}")
@@ -447,7 +499,14 @@ def main():
             domains = [r['domain'] for r in dns_records]
         elif ext.endswith('.csv'):
             print(f"正在从CSV文件读取域名: {input_path}")
-            domains = load_domain_file(input_path)
+            # 尝试读取带label的数据
+            domain_with_labels = load_domain_file(input_path, with_label=True)
+            if domain_with_labels:
+                domains = [d[0] for d in domain_with_labels]
+                domain_labels = {d[0]: d[1] for d in domain_with_labels}
+                print(f"已加载 {len(domain_labels)} 个带标签的域名")
+            else:
+                domains = load_domain_file(input_path)
         elif ext.endswith('.txt'):
             print(f"正在从TXT文件读取域名: {input_path}")
             domains = load_domain_file(input_path)
@@ -463,10 +522,6 @@ def main():
         print(f"提取到 {len(dns_records)} 条DNS记录，{len(unique_domains)} 个唯一域名")
         
         if args.detect:
-            print("\n" + "="*80)
-            print("【外部数据包检测模式】")
-            print("="*80)
-            
             filter_result = batch_rapid_filter(unique_domains)
             
             print(f"\n初步研判完成:")
@@ -482,11 +537,9 @@ def main():
             if not USE_SOCKET4_FEATURES:
                 print("\n错误: 未找到import socket4.py模块，无法进行精密研判")
                 return
-            
-            # 精密研判 - 只使用import socket4.py
-            print("\n" + "="*80)
-            print("【精密研判 - import socket4.py】")
-            print("="*80)
+
+            print("【精密研判】")
+
             
             # 初始化在线学习
             model = None
@@ -555,14 +608,15 @@ def main():
                 print("   [通过]")
             
             # 5. 单个域名详细检测
-            print("\n" + "="*80)
-            print("【域名详细检测】")
-            print("="*80)
-            print(f"{'域名':<45} {'状态':<10} {'原因'}")
-            print("="*80)
             
             malicious_domains = []
             suspicious_domains = []
+            normal_domains = []
+            
+            # 收集预测统计数据
+            pres = []
+            ml_true_labels = []
+            ml_correct_count = 0
             
             for domain in suspicious_domains_list:
                 res = socket4_module.check_dns_record(domain)
@@ -579,48 +633,88 @@ def main():
                 if res["is_malicious"]:
                     status = "[恶意]"
                     malicious_domains.append(res)
+                    final_label = 1
                 elif res["is_suspicious"]:
                     status = "[可疑]"
                     suspicious_domains.append(res)
+                    final_label = 1
                 else:
                     status = "[正常]"
+                    normal_domains.append(res)
+                    final_label = 0
                 
-                reason = res["reason"]
+                # 获取真实label（如果存在）
+                true_label = domain_labels.get(domain)
+                
+                # 收集预测数据用于准确度计算
                 if res.get('ml_prediction') is not None:
-                    ml_label = '恶意' if res['ml_prediction'] else '正常'
-                    reason += f" | ML: {ml_label} ({res['ml_confidence']:.2f})"
+                    pres.append(res['ml_prediction'])
+                    ml_true_labels.append(true_label)
+                    # 比较ML预测与真实label
+                    if true_label is not None and res['ml_prediction'] == true_label:
+                        ml_correct_count += 1
                 
-                print(f"{domain:<45} {status:<10} {reason}")
+                print(f"{domain:<45} {status:<10} {res['reason']}")
             
             # 总结报告
-            print("\n" + "="*80)
-            print("【检测总结】")
-            print("="*80)
+            print("\n【检测总结】")
             print(f"总域名数: {filter_result['total_count']}")
             print(f"初步筛选安全: {filter_result['filtered_count']}")
             print(f"精密研判: {len(suspicious_domains_list)}")
             print(f"  - 恶意域名: {len(malicious_domains)}")
             print(f"  - 可疑域名: {len(suspicious_domains)}")
-            print(f"  - 正常域名: {len(suspicious_domains_list) - len(malicious_domains) - len(suspicious_domains)}")
+            print(f"  - 正常域名: {len(normal_domains)}")
+            
+            # 检测率统计
+            total = filter_result['total_count']
+            if total > 0:
+                malicious_rate = len(malicious_domains) / total * 100
+                suspicious_rate = len(suspicious_domains) / total * 100
+                normal_rate = len(normal_domains) / total * 100
+                filtered_rate = filter_result['filtered_count'] / total * 100
+                
+                print(f"\n【检测率统计】")
+                print(f"恶意域名率: {malicious_rate:.2f}%")
+                print(f"可疑域名率: {suspicious_rate:.2f}%")
+                print(f"正常域名率: {normal_rate:.2f}%")
+                print(f"初步筛选率: {filtered_rate:.2f}%")
             
             if malicious_domains:
                 print(f"\n发现{len(malicious_domains)}个恶意域名:")
                 for item in malicious_domains:
                     print(f"  - {item['domain']}: {item['reason']}")
+            
+            # 输出研判准确度统计（放在最后）
+            if pres:
+                labeled_count = sum(1 for l in ml_true_labels if l is not None)
+                if labeled_count > 0:
+                    ml_accuracy = ml_correct_count / labeled_count * 100
+                    print(f"\n【研判准确度】: {ml_accuracy:.2f}%")
         return
     
-    if args.predict:
+    if args.judge:
         domains = []
-        if os.path.isfile(args.predict):
-            ext = args.predict.lower()
+        domain_labels = {}  # 存储域名的真实label
+        
+        if os.path.isfile(args.judge):
+            ext = args.judge.lower()
             if ext.endswith('.pcap') or ext.endswith('.pcapng'):
-                domains = load_domain_file(args.predict)
+                domains = load_domain_file(args.judge)
                 if not domains:
-                    domains = load_pcap_domains(args.predict)
+                    domains = load_pcap_domains(args.judge)
+            elif ext.endswith('.csv'):
+                # 尝试读取带label的数据
+                domain_with_labels = load_domain_file(args.judge, with_label=True)
+                if domain_with_labels:
+                    domains = [d[0] for d in domain_with_labels]
+                    domain_labels = {d[0]: d[1] for d in domain_with_labels}
+                    print(f"已加载 {len(domain_labels)} 个带标签的域名")
+                else:
+                    domains = load_domain_file(args.judge)
             else:
-                domains = load_domain_file(args.predict)
+                domains = load_domain_file(args.judge)
         else:
-            domains = [args.predict]
+            domains = [args.judge]
         
         if not domains:
             print("未找到待检测域名")
@@ -629,9 +723,7 @@ def main():
         print(f"待检测域名数: {len(domains)}")
         
         if args.two_stage:
-            print("\n" + "="*80)
-            print("【第一阶段：初步研判筛选】")
-            print("="*80)
+            print("\n【第一阶段：初步研判筛选】")
             
             filter_result = batch_rapid_filter(domains)
             
@@ -639,13 +731,6 @@ def main():
             print(f"  总域名数: {filter_result['total_count']}")
             print(f"  安全域名: {filter_result['filtered_count']} ({filter_result['filter_rate']:.1f}%)")
             print(f"  可疑域名: {filter_result['remaining_count']}")
-            
-            if filter_result['safe_domains']:
-                print("\n  安全域名列表:")
-                for safe in filter_result['safe_domains'][:5]:
-                    print(f"    - {safe['domain']} (安全度: {safe['safety_score']:.0f}%)")
-                if len(filter_result['safe_domains']) > 5:
-                    print(f"    ... 还有 {len(filter_result['safe_domains']) - 5} 个安全域名")
             
             if not filter_result['suspicious_domains']:
                 print("\n【检测完成】所有域名均为安全")
@@ -656,10 +741,7 @@ def main():
                 print("\n错误: 未找到import socket4.py模块，无法进行精密研判")
                 return
             
-            # 精密研判 - 只使用import socket4.py
-            print("\n" + "="*80)
-            print("【第二阶段：精密研判 - import socket4.py】")
-            print("="*80)
+            print("\n【第二阶段：精密研判】")
             
             suspicious_domains_list = [s['domain'] for s in filter_result['suspicious_domains']]
             print(f"对 {len(suspicious_domains_list)} 个可疑域名进行精密研判...")
@@ -676,14 +758,18 @@ def main():
                 })
             
             # 单个域名详细检测
-            print("\n" + "="*80)
-            print("【域名详细检测】")
-            print("="*80)
+            print("\n【域名详细检测】")
             print(f"{'域名':<45} {'状态':<10} {'原因'}")
-            print("="*80)
+            print("-"*80)
             
             malicious_domains = []
             suspicious_domains = []
+            normal_domains = []
+            
+            # 收集预测统计数据
+            pres = []
+            ml_true_labels = []
+            ml_correct_count = 0
             
             for domain in suspicious_domains_list:
                 res = socket4_module.check_dns_record(domain)
@@ -700,41 +786,68 @@ def main():
                 if res["is_malicious"]:
                     status = "[恶意]"
                     malicious_domains.append(res)
+                    final_label = 1
                 elif res["is_suspicious"]:
                     status = "[可疑]"
                     suspicious_domains.append(res)
+                    final_label = 1
                 else:
                     status = "[正常]"
+                    normal_domains.append(res)
+                    final_label = 0
                 
-                reason = res["reason"]
+                # 获取真实label
+                true_label = domain_labels.get(domain)
+                
+                # 收集预测数据用于准确度计算
                 if res.get('ml_prediction') is not None:
-                    ml_label = '恶意' if res['ml_prediction'] else '正常'
-                    reason += f" | ML: {ml_label} ({res['ml_confidence']:.2f})"
+                    pres.append(res['ml_prediction'])
+                    ml_true_labels.append(true_label)
+                    if true_label is not None and res['ml_prediction'] == true_label:
+                        ml_correct_count += 1
                 
-                print(f"{domain:<45} {status:<10} {reason}")
+                print(f"{domain:<45} {status:<10} {res['reason']}")
             
             # 总结报告
-            print("\n" + "="*80)
-            print("【检测总结】")
-            print("="*80)
+            print("\n【检测总结】")
             print(f"总域名数: {filter_result['total_count']}")
             print(f"初步筛选安全: {filter_result['filtered_count']}")
             print(f"精密研判: {len(suspicious_domains_list)}")
             print(f"  - 恶意域名: {len(malicious_domains)}")
             print(f"  - 可疑域名: {len(suspicious_domains)}")
-            print(f"  - 正常域名: {len(suspicious_domains_list) - len(malicious_domains) - len(suspicious_domains)}")
+            print(f"  - 正常域名: {len(normal_domains)}")
+            
+            # 检测率统计
+            total = filter_result['total_count']
+            if total > 0:
+                malicious_rate = len(malicious_domains) / total * 100
+                suspicious_rate = len(suspicious_domains) / total * 100
+                normal_rate = len(normal_domains) / total * 100
+                filtered_rate = filter_result['filtered_count'] / total * 100
+                
+                print(f"\n【检测率统计】")
+                print(f"恶意域名率: {malicious_rate:.2f}%")
+                print(f"可疑域名率: {suspicious_rate:.2f}%")
+                print(f"正常域名率: {normal_rate:.2f}%")
+                print(f"初步筛选率: {filtered_rate:.2f}%")
             
             if malicious_domains:
                 print(f"\n发现{len(malicious_domains)}个恶意域名:")
                 for item in malicious_domains:
                     print(f"  - {item['domain']}: {item['reason']}")
+            
+            # 输出研判准确度统计（放在最后）
+            if pres:
+                labeled_count = sum(1 for l in ml_true_labels if l is not None)
+                if labeled_count > 0:
+                    ml_accuracy = ml_correct_count / labeled_count * 100
+                    print(f"\n研判准确度: {ml_accuracy:.2f}%")
         
         else:
-            print("\n请使用 --two-stage 参数进行两级检测")
-            print("或使用 --input 和 --detect 参数导入PCAP文件进行检测")
+            print("\n请使用 --two-stage 参数进行检测")
     
-    if not any([args.predict, args.input, args.generate, args.train, args.inference]):
-        parser.print_help()
+    if not any([args.judge, args.input, args.generate, args.train, args.inference]):
+        pass
 
 if __name__ == '__main__':
     main()

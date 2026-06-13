@@ -7,6 +7,7 @@ from datetime import datetime
 from scapy.all import rdpcap, DNS
 import joblib
 import pandas as pd
+
 MALICIOUS_DOMAINS = {
     "malware-test.com",
     "phishing-example.org",
@@ -36,12 +37,6 @@ HIGH_RISK_DOMAINS = {
 # 冷门域名检测阈值
 COLD_DOMAIN_ACCESS_COUNT = 3   # 访问次数低于此值视为冷门域名
 COLD_DOMAIN_TOTAL_THRESHOLD = 0.3  # 冷门域名占总访问比例超过此值视为异常
-#顶级域名白名单（正常域名后缀）
-SAFE_TLDS = {
-    '.com', '.org', '.net', '.edu', '.gov', '.mil',
-    '.cn', '.jp', '.de', '.uk', '.fr', '.ru', '.br',
-    '.io', '.co', '.info', '.biz', '.tv', '.cc'
-}
 
 # 内网IP范围
 INTERNAL_IP_RANGES = [
@@ -60,7 +55,12 @@ RESOURCE_HEAVY_TYPES = {'TXT', 'MX', 'SRV', 'ANY'}
 TYPE_FREQUENCY_THRESHOLD=20 # 每分钟查询次数上限
 
 try:
-    ML_MODEL = joblib.load('dns_malware_model.pkl')
+    model_data = joblib.load('dns_ml_model.pkl')
+    # 模型保存时是元组 (model, scaler)
+    if isinstance(model_data, tuple):
+        ML_MODEL = model_data[0]
+    else:
+        ML_MODEL = model_data
     print("机器学习模型加载成功")
 except FileNotFoundError:
     print("机器学习模型文件不存在。")
@@ -209,25 +209,6 @@ def detect_access_pattern_anomaly(dns_data):
         result['details']['cold_domain_ratio'] = round(cold_domain_ratio, 2)
         result['details']['cold_domain_count'] = len(cold_domains)
         result['details']['total_unique_domains'] = unique_domains
-    #3异常TLD检测（使用不常见顶级域名的域名）
-    suspicious_tld = []
-    for domain in domain_counts.keys():
-        has_safe_tld = any(domain.endswith(tld) for tld in SAFE_TLDS)
-        if not has_safe_tld and domain.count('.') >= 1:
-            # 提取TLD
-            tld = '.' + domain.split('.')[-1]
-            suspicious_tld.append({
-                'domain': domain,
-                'tld': tld,
-                'access_count': domain_counts[domain],
-                'reason': f'使用异常顶级域名 {tld}'
-            })
-    
-    if suspicious_tld:
-        result['has_anomaly'] = True
-        result['anomaly_types'].append('异常TLD')
-        result['suspicious_tld_domains'] = suspicious_tld[:10]
-        result['details']['suspicious_tld_count'] = len(suspicious_tld)
     
     return result
 
@@ -548,7 +529,7 @@ def check_dns_record(domain: str) -> dict:
     for pattern in SUSPICIOUS_PATTERNS:
         if pattern.search(domain):
             result["is_suspicious"] = True
-            result["reason"] = f"命中可疑特征：{pattern.pattern}"
+            result["reason"] = "域名特征异常"
             break
     try:
         ip = socket.gethostbyname(domain)
@@ -564,7 +545,7 @@ def check_dns_record(domain: str) -> dict:
         result["ml_confidence"] = ml_result["confidence"]
         if ml_result["is_malicious"] and ml_result["confidence"] > 0.7:
             result["is_malicious"] = True
-            result["reason"] = f"机器学习模型预测为恶意（置信度：{ml_result['confidence']:.2f}）"
+            result["reason"] = "模型检测为恶意"
     return result
 
 def load_dns_log(file_path: str = "dns_log.txt") -> list:
@@ -779,8 +760,7 @@ if __name__ == "__main__":
         if not domain:
             continue
         res = check_dns_record(domain)
-        ml_info = f" | ML预测: {'恶意' if res.get('ml_prediction') else '正常'} (置信度: {res.get('ml_confidence', 0):.2f})" if res.get('ml_prediction') is not None else ""
-        print(f"【检测】{domain:30} | {res['reason']}{ml_info}")
+        print(f"【检测】{domain:30} | {res['reason']}")
         if res["is_malicious"]:
             malicious_list.append(res)
         elif res["is_suspicious"]:
@@ -795,11 +775,9 @@ if __name__ == "__main__":
     if malicious_list:
         print("\n发现恶意域名：")
         for item in malicious_list:
-            ml_info = f" | ML预测: {'恶意' if item.get('ml_prediction') else '正常'} (置信度: {item.get('ml_confidence', 0):.2f})" if item.get('ml_prediction') is not None else ""
-            print(f"  - {item['domain']} | {item['reason']}{ml_info}")
+            print(f"  - {item['domain']} | {item['reason']}")
     if suspicious_list:
         print("\n发现可疑域名：")
         for item in suspicious_list:
-            ml_info = f" | ML预测: {'恶意' if item.get('ml_prediction') else '正常'} (置信度: {item.get('ml_confidence', 0):.2f})" if item.get('ml_prediction') is not None else ""
-            print(f"  - {item['domain']} | {item['reason']}{ml_info}")
+            print(f"  - {item['domain']} | {item['reason']}")
     print(f"\n检测完成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
