@@ -1,3 +1,10 @@
+"""Legacy YAML configuration helper.
+
+This module is kept for backwards compatibility with older scripts.  New code
+should use :mod:`dns_filter.config`, which provides typed and validated
+configuration objects instead of a process-wide singleton.
+"""
+
 import os
 import yaml
 

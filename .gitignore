@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+
+# Local runtime output
+filtering/sniffer.log*
+filtering/_e2e.log
+filtering/tests/_artifacts/
