@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "erd",
+  "quality": "standard",
+  "specification": {
+    "path": "C:\\Users\\I3Ru\\dachuang\\.archify\\erd-filtering-data-model-20261111-153020\\candidate.json",
+    "sha256": "62fec74b09694d99f3e519592fce1df6d8e252e913bd989358850f6c99b5cd22",
+    "bytes": 8732
+  },
+  "artifact": {
+    "path": "C:\\Users\\I3Ru\\dachuang\\.archify\\erd-filtering-data-model-20261111-153020\\filtering-data-model.html",
+    "sha256": "4507aa3c3a8b26dab04a2aa5afc4ced630f30c63c09979a1efdfaab9359d25b4",
+    "bytes": 865349
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "C:\\Users\\I3Ru\\dachuang\\.archify\\erd-filtering-data-model-20261111-153020\\filtering-data-model.finalize.json",
+    "summaryReceipt": "C:\\Users\\I3Ru\\dachuang\\.archify\\erd-filtering-data-model-20261111-153020\\filtering-data-model.finalize-summary.json",
+    "browserCheckReceipt": "C:\\Users\\I3Ru\\dachuang\\.archify\\erd-filtering-data-model-20261111-153020\\filtering-data-model.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-11-11T07:39:22.870Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 2783,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  },
+  "visualReviewRecommendation": {
+    "action": "inspect-route-readability",
+    "signals": {
+      "routesOverSuggestedBends": 1
+    },
+    "reason": "Automated gates passed, but crossings or detours still need perceptual review before claiming visual quality.",
+    "affectedRoutes": {
+      "crossings": [],
+      "detours": [
+        {
+          "relationship": {
+            "id": "service_filter",
+            "from": "service_stats",
+            "to": "filter_stats",
+            "label": "filter",
+            "collectionIndex": 5,
+            "artifactIndex": 6
+          },
+          "bends": 3,
+          "stretch": 1
+        }
+      ],
+      "truncated": false
+    },
+    "repair": "Advisory only: this mode places or routes these relationships itself. Report them; do not remove relationships or meaning to reduce crossings."
+  }
+}

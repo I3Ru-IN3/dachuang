@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "sequence",
+  "quality": "showcase",
+  "specification": {
+    "path": "C:\\Users\\I3Ru\\dachuang\\.archify\\sequence-filtering-packet-path-20261111-153020\\candidate.json",
+    "sha256": "ab08439e53c52b68af60ed8754a9032f6ed4c26f80afa416c5108aaf4d4a36a0",
+    "bytes": 7004
+  },
+  "artifact": {
+    "path": "C:\\Users\\I3Ru\\dachuang\\.archify\\sequence-filtering-packet-path-20261111-153020\\filtering-packet-path.html",
+    "sha256": "ef72bca01f0e41ba5ac4f5b0ada05535a882b7b3adf67cb8383571333bf67819",
+    "bytes": 848667
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "C:\\Users\\I3Ru\\dachuang\\.archify\\sequence-filtering-packet-path-20261111-153020\\filtering-packet-path.finalize.json",
+    "summaryReceipt": "C:\\Users\\I3Ru\\dachuang\\.archify\\sequence-filtering-packet-path-20261111-153020\\filtering-packet-path.finalize-summary.json",
+    "browserCheckReceipt": "C:\\Users\\I3Ru\\dachuang\\.archify\\sequence-filtering-packet-path-20261111-153020\\filtering-packet-path.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-11-11T07:39:22.870Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 3141,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  }
+}

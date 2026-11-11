@@ -1,0 +1,190 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "一条 DNS 数据包的过滤与检测路径",
+    "locale": "zh-CN",
+    "output": ".archify/sequence-filtering-packet-path-20261111-153020/filtering-packet-path.html",
+    "quality_profile": "showcase",
+    "viewBox": [1085, 700],
+    "repository": {
+      "url": "https://github.com/I3Ru-IN3/dachuang.git",
+      "provider": "github",
+      "revision": "6279924742bd3136dc633a9e071380745b03f815"
+    }
+  },
+  "participants": [
+    {
+      "id": "cli",
+      "type": "backend",
+      "label": "CLI",
+      "sublabel": "入口脚本",
+      "sources": [
+        { "path": "filtering/Filtering.py", "line": 14, "end_line": 24 },
+        { "path": "filtering/dns_filter/cli.py", "line": 31, "end_line": 60 }
+      ]
+    },
+    {
+      "id": "service",
+      "type": "backend",
+      "label": "Service",
+      "sublabel": "service.py",
+      "sources": [
+        { "path": "filtering/dns_filter/service.py", "line": 51, "end_line": 72 },
+        { "path": "filtering/dns_filter/service.py", "line": 164, "end_line": 172 }
+      ]
+    },
+    {
+      "id": "capture",
+      "type": "backend",
+      "label": "capture",
+      "sublabel": "sniff_packets",
+      "sources": [
+        { "path": "filtering/dns_filter/capture.py", "line": 33, "end_line": 58 }
+      ]
+    },
+    {
+      "id": "scapy",
+      "type": "external",
+      "label": "Scapy",
+      "sublabel": "sniff / pcap",
+      "sources": [
+        { "path": "filtering/dns_filter/capture.py", "line": 13, "end_line": 13 },
+        { "path": "filtering/dns_filter/capture.py", "line": 48, "end_line": 52 }
+      ]
+    },
+    {
+      "id": "grouper",
+      "type": "backend",
+      "label": "PacketGrouper",
+      "sublabel": "grouping.py",
+      "sources": [
+        { "path": "filtering/dns_filter/grouping.py", "line": 38, "end_line": 121 }
+      ]
+    },
+    {
+      "id": "parser",
+      "type": "backend",
+      "label": "dns_parser",
+      "sublabel": "校验 + 提取",
+      "sources": [
+        { "path": "filtering/dns_filter/dns_parser.py", "line": 170, "end_line": 220 },
+        { "path": "filtering/dns_filter/dns_parser.py", "line": 241, "end_line": 299 }
+      ]
+    },
+    {
+      "id": "engine",
+      "type": "backend",
+      "label": "Engine",
+      "sublabel": "filters.py",
+      "sources": [
+        { "path": "filtering/dns_filter/filters.py", "line": 88, "end_line": 208 }
+      ]
+    },
+    {
+      "id": "cold",
+      "type": "database",
+      "label": "ColdFilter",
+      "sublabel": "淘汰区",
+      "sources": [
+        { "path": "filtering/dns_filter/filters.py", "line": 44, "end_line": 64 }
+      ]
+    },
+    {
+      "id": "detector",
+      "type": "backend",
+      "label": "Detector",
+      "sublabel": "detection.py",
+      "sources": [
+        { "path": "filtering/dns_filter/detection.py", "line": 93, "end_line": 164 }
+      ]
+    },
+    {
+      "id": "sink",
+      "type": "external",
+      "label": "DetectionSink",
+      "sublabel": "logging",
+      "sources": [
+        { "path": "filtering/dns_filter/detection.py", "line": 75, "end_line": 83 }
+      ]
+    }
+  ],
+  "segments": [
+    { "from": 150, "to": 340, "label": "单包进入" },
+    { "from": 340, "to": 510, "label": "批量与过滤" },
+    { "from": 510, "to": 595, "label": "检测与收尾" }
+  ],
+  "messages": [
+    { "id": "run", "from": "cli", "to": "service", "y": 160, "label": "run()", "variant": "emphasis" },
+    { "id": "sniff-call", "from": "service", "to": "capture", "y": 188, "label": "sniff_packets(capture, add_packet)" },
+    { "id": "sniff", "from": "capture", "to": "scapy", "y": 216, "label": "sniff(prn=add_packet)" },
+    { "id": "packet", "from": "scapy", "to": "service", "y": 244, "label": "add_packet(pkt)" },
+    { "id": "add", "from": "service", "to": "grouper", "y": 272, "label": "add(pkt)" },
+    { "id": "validate", "from": "grouper", "to": "parser", "y": 300, "label": "is_valid_dns_packet(pkt)" },
+    { "id": "valid", "from": "parser", "to": "grouper", "y": 328, "label": "true", "variant": "return" },
+    {
+      "id": "extract",
+      "from": "grouper",
+      "to": "parser",
+      "y": 365,
+      "label": "extract_dns_info(batch)",
+      "variant": "emphasis",
+      "note": "批量/超时"
+    },
+    { "id": "infos", "from": "parser", "to": "grouper", "y": 415, "label": "list[DnsInfo]", "variant": "return" },
+    { "id": "ingest", "from": "grouper", "to": "engine", "y": 445, "label": "add_dnsinfos(infos)", "variant": "emphasis" },
+    {
+      "id": "evict",
+      "from": "engine",
+      "to": "cold",
+      "y": 485,
+      "label": "add(淘汰批次)",
+      "variant": "dashed",
+      "note": "发生哈希冲突时"
+    },
+    { "id": "snapshot", "from": "detector", "to": "engine", "y": 535, "label": "burst_infos()", "variant": "dashed" },
+    { "id": "snapshot-back", "from": "engine", "to": "detector", "y": 565, "label": "快照 list[DnsInfo]", "variant": "return" },
+    { "id": "emit", "from": "detector", "to": "sink", "y": 590, "label": "emit", "variant": "dashed" }
+  ],
+  "activations": [
+    { "participant": "cli", "from": 155, "to": 165, "type": "backend" },
+    { "participant": "service", "from": 155, "to": 595, "type": "backend" },
+    { "participant": "capture", "from": 183, "to": 250, "type": "backend" },
+    { "participant": "scapy", "from": 211, "to": 249, "type": "external" },
+    { "participant": "grouper", "from": 265, "to": 595, "type": "backend" },
+    { "participant": "parser", "from": 295, "to": 425, "type": "backend" },
+    { "participant": "engine", "from": 435, "to": 585, "type": "backend" },
+    { "participant": "cold", "from": 480, "to": 490, "type": "database" },
+    { "participant": "detector", "from": 520, "to": 595, "type": "backend" },
+    { "participant": "sink", "from": 585, "to": 595, "type": "external" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "主路径",
+      "items": [
+        "CLI 创建 FilteringService，再把 capture 配置和 add_packet 回调交给 capture 适配层。",
+        "Scapy 每收到一个包就回调 service.add_packet，再转给 PacketGrouper。",
+        "只有通过 is_valid_dns_packet 的包才进入缓冲区。"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "批量与过滤",
+      "items": [
+        "缓冲区达到 group_size 或超时后，grouper 调用 extract_dns_info 生成不可变 DnsInfo 列表。",
+        "BurstFilterEngine 按 registered_domain 分组，用 xxhash32 取模定位桶。",
+        "同域追加；哈希冲突时按旧策略把一侧移到 ColdFilter。"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "检测与收尾",
+      "items": [
+        "PeriodicDetector 取 burst_infos() 快照，检测规则不持有过滤器锁。",
+        "PayloadSizeDetector 找到 payload_size > 100 的记录并交给 DetectionSink。",
+        "service.close() 先 flush 尾批，再停止检测线程；冷检测默认不启动。"
+      ]
+    }
+  ]
+}

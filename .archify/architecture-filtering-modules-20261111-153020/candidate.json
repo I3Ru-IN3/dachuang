@@ -1,0 +1,208 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "filtering 模块架构：入口、流水线与支撑",
+    "locale": "zh-CN",
+    "output": ".archify/architecture-filtering-modules-20261111-153020/filtering-modules.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/I3Ru-IN3/dachuang.git",
+      "provider": "github",
+      "revision": "6279924742bd3136dc633a9e071380745b03f815"
+    }
+  },
+  "components": [
+    {
+      "id": "entry",
+      "type": "backend",
+      "label": "CLI 入口",
+      "sublabel": "Filtering.py + cli.py",
+      "tag": "入口",
+      "pos": [40, 40],
+      "size": [180, 64],
+      "sources": [
+        { "path": "filtering/Filtering.py", "line": 14, "end_line": 24 },
+        { "path": "filtering/dns_filter/cli.py", "line": 31, "end_line": 60 }
+      ]
+    },
+    {
+      "id": "service",
+      "type": "backend",
+      "label": "FilteringService",
+      "sublabel": "service.py · 装配与生命周期",
+      "tag": "编排",
+      "pos": [280, 40],
+      "size": [200, 72],
+      "sources": [
+        { "path": "filtering/dns_filter/service.py", "line": 51, "end_line": 72 },
+        { "path": "filtering/dns_filter/service.py", "line": 164, "end_line": 172 }
+      ]
+    },
+    {
+      "id": "config",
+      "type": "backend",
+      "label": "配置与日志",
+      "sublabel": "config.py + logging_setup.py",
+      "tag": "支撑",
+      "pos": [540, 40],
+      "size": [190, 64],
+      "sources": [
+        { "path": "filtering/dns_filter/config.py", "line": 30, "end_line": 102 },
+        { "path": "filtering/dns_filter/logging_setup.py", "line": 18, "end_line": 43 }
+      ]
+    },
+    {
+      "id": "capture",
+      "type": "backend",
+      "label": "采集适配",
+      "sublabel": "capture.py · sniff_packets",
+      "tag": "采集",
+      "pos": [40, 190],
+      "size": [180, 64],
+      "sources": [
+        { "path": "filtering/dns_filter/capture.py", "line": 33, "end_line": 58 }
+      ]
+    },
+    {
+      "id": "grouping",
+      "type": "backend",
+      "label": "分组与解析",
+      "sublabel": "grouping.py + dns_parser.py",
+      "tag": "解析",
+      "pos": [280, 190],
+      "size": [220, 72],
+      "sources": [
+        { "path": "filtering/dns_filter/grouping.py", "line": 38, "end_line": 121 },
+        { "path": "filtering/dns_filter/dns_parser.py", "line": 170, "end_line": 220 },
+        { "path": "filtering/dns_filter/dns_parser.py", "line": 241, "end_line": 299 }
+      ]
+    },
+    {
+      "id": "filters",
+      "type": "backend",
+      "label": "热/冷过滤器",
+      "sublabel": "filters.py · BurstFilterEngine",
+      "tag": "状态",
+      "pos": [560, 190],
+      "size": [200, 72],
+      "sources": [
+        { "path": "filtering/dns_filter/filters.py", "line": 88, "end_line": 208 }
+      ]
+    },
+    {
+      "id": "detection",
+      "type": "backend",
+      "label": "定时检测",
+      "sublabel": "detection.py · PeriodicDetector",
+      "tag": "检测",
+      "pos": [820, 190],
+      "size": [180, 64],
+      "sources": [
+        { "path": "filtering/dns_filter/detection.py", "line": 93, "end_line": 164 }
+      ]
+    },
+    {
+      "id": "models",
+      "type": "backend",
+      "label": "数据模型与输出",
+      "sublabel": "models.py + output.py",
+      "tag": "模型",
+      "pos": [560, 340],
+      "size": [200, 64],
+      "sources": [
+        { "path": "filtering/dns_filter/models.py", "line": 13, "end_line": 87 },
+        { "path": "filtering/dns_filter/output.py", "line": 12, "end_line": 24 }
+      ]
+    },
+    {
+      "id": "scapy",
+      "type": "external",
+      "label": "Scapy / pcap",
+      "sublabel": "sniff · rdpcap · DNS layers",
+      "tag": "外部",
+      "pos": [40, 500],
+      "size": [180, 60],
+      "sources": [
+        { "path": "filtering/dns_filter/capture.py", "line": 13, "end_line": 13 },
+        { "path": "filtering/dns_filter/dns_parser.py", "line": 14, "end_line": 15 }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "入口、配置与编排",
+      "wraps": ["entry", "service", "config"]
+    },
+    {
+      "kind": "region",
+      "label": "采集、解析、过滤与检测",
+      "wraps": ["capture", "grouping", "filters", "detection", "models"]
+    }
+  ],
+  "connections": [
+    { "id": "entry-service", "from": "entry", "to": "service", "label": "run" },
+    { "id": "service-config", "from": "service", "to": "config", "label": "读取配置" },
+    { "id": "service-capture", "from": "service", "to": "capture" },
+    { "id": "service-grouping", "from": "service", "to": "grouping", "label": "装配" },
+    { "id": "service-filters", "from": "service", "to": "filters" },
+    { "id": "service-detection", "from": "service", "to": "detection" },
+    { "id": "capture-scapy", "from": "capture", "to": "scapy", "label": "sniff" },
+    { "id": "grouping-scapy", "from": "grouping", "to": "scapy", "label": "解析 DNS" },
+    { "id": "grouping-models", "from": "grouping", "to": "models", "label": "生成 DnsInfo" },
+    {
+      "id": "filters-grouping",
+      "from": "filters",
+      "to": "grouping",
+      "label": "注册域",
+      "fromSide": "left",
+      "toSide": "right",
+      "labelDy": -16
+    },
+    {
+      "id": "filters-models",
+      "from": "filters",
+      "to": "models",
+      "label": "持有 DnsInfo"
+    },
+    {
+      "id": "detection-models",
+      "from": "detection",
+      "to": "models",
+      "label": "读取快照",
+      "toSide": "right"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "边界",
+      "items": [
+        "Filtering.py / cli.py 是唯一启动入口，负责参数、配置与日志初始化。",
+        "FilteringService 是组合根：构造采集、分组、过滤与检测对象，并管理线程启停。",
+        "采集、解析、过滤与检测构成核心处理链；数据模型只承载层间契约。"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "依赖方向",
+      "items": [
+        "service -> capture / grouping / filters / detection：运行期装配与回调注入。",
+        "grouping + dns_parser 产出 DnsInfo；filters 持有并淘汰 DnsInfo。",
+        "filters 复用 dns_parser.extract_registered_domain，避免重复实现域名归一化。",
+        "detection 只读快照，不直接依赖 filters 模块；耦合由 service 在装配时注入。"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "外部与运行时",
+      "items": [
+        "Scapy 提供在线 sniff、离线 rdpcap 与 DNS 层解析；pcap / 网卡是输入源。",
+        "PyYAML 只用于 config.py；xxhash32 只用于桶索引；输出 CSV 由 output.py 负责。",
+        "抓包回调线程、grouper 超时线程、burst/cold 检测线程共享 BurstFilterEngine 的 RLock。",
+        "日志文件、CSV 与 pcap 的读写都发生在边缘适配层或输出层。"
+      ]
+    }
+  ]
+}

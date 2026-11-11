@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "ee482711-5f3d-49db-ba44-936c6eca8ab0",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "C:\\Users\\I3Ru\\dachuang\\.archify\\architecture-filtering-modules-20261111-153020\\candidate.json",
+  "output": "C:\\Users\\I3Ru\\dachuang\\.archify\\architecture-filtering-modules-20261111-153020\\filtering-modules.html",
+  "specification": {
+    "sha256": "e660a824cd9bc9e48bc7fa1899745cbc2b98a6dc87d08b364031c874092bbb84",
+    "bytes": 6973
+  },
+  "artifact": {
+    "sha256": "550839aefd3ee0246a3f4b33fffc5b25dedf2a5e10fd17816dc54a0f12beb458",
+    "bytes": 853448
+  }
+}

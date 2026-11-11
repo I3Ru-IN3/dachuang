@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "82303512-5b0e-431b-a487-43bb11938bef",
+  "status": "current",
+  "command": "deliver",
+  "type": "sequence",
+  "input": "C:\\Users\\I3Ru\\dachuang\\.archify\\sequence-filtering-packet-path-20261111-153020\\candidate.json",
+  "output": "C:\\Users\\I3Ru\\dachuang\\.archify\\sequence-filtering-packet-path-20261111-153020\\filtering-packet-path.html",
+  "specification": {
+    "sha256": "ab08439e53c52b68af60ed8754a9032f6ed4c26f80afa416c5108aaf4d4a36a0",
+    "bytes": 7004
+  },
+  "artifact": {
+    "sha256": "ef72bca01f0e41ba5ac4f5b0ada05535a882b7b3adf67cb8383571333bf67819",
+    "bytes": 848667
+  }
+}

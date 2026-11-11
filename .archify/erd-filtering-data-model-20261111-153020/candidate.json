@@ -1,0 +1,292 @@
+{
+  "schema_version": 1,
+  "diagram_type": "erd",
+  "meta": {
+    "title": "filtering 数据模型：记录、过滤状态与统计",
+    "locale": "zh-CN",
+    "output": ".archify/erd-filtering-data-model-20261111-153020/filtering-data-model.html",
+    "quality_profile": "standard",
+    "repository": {
+      "url": "https://github.com/I3Ru-IN3/dachuang.git",
+      "provider": "github",
+      "revision": "6279924742bd3136dc633a9e071380745b03f815"
+    },
+    "views": [
+      {
+        "id": "records",
+        "label": "记录与告警",
+        "focus": ["dns_info", "detection"],
+        "note": "DnsInfo 是不可变记录；Detection 引用它。"
+      },
+      {
+        "id": "filter_state",
+        "label": "热/冷过滤状态",
+        "focus": ["burst_bucket", "cold_filter", "dns_info"],
+        "note": "桶与冷区都保存 DnsInfo 引用。"
+      },
+      {
+        "id": "read_models",
+        "label": "快照与统计",
+        "focus": ["filter_snapshot", "filter_stats", "grouper_stats", "service_stats"],
+        "note": "读模型与运行统计，不参与过滤写入。"
+      }
+    ]
+  },
+  "layout": {
+    "mode": "grid",
+    "gapX": 72,
+    "gapY": 42,
+    "entityW": 260
+  },
+  "entities": [
+    {
+      "id": "dns_info",
+      "label": "DnsInfo",
+      "sublabel": "不可变 DNS 观测记录",
+      "tag": "record",
+      "row": 0,
+      "col": 0,
+      "width": 270,
+      "attributes": [
+        { "name": "timestamp", "type": "float" },
+        { "name": "ttl", "type": "int | None" },
+        { "name": "payload_size", "type": "int" },
+        { "name": "domain", "type": "str | None" },
+        { "name": "registered_domain", "type": "str | None" },
+        { "name": "record_type", "type": "int | None" },
+        { "name": "client_ip", "type": "str" },
+        { "name": "rdata", "type": "str | None" }
+      ],
+      "sources": [
+        { "path": "filtering/dns_filter/models.py", "line": 13, "end_line": 29 }
+      ]
+    },
+    {
+      "id": "detection",
+      "label": "Detection",
+      "sublabel": "规则命中结果",
+      "tag": "record",
+      "row": 1,
+      "col": 0,
+      "width": 270,
+      "attributes": [
+        { "name": "rule", "type": "str" },
+        { "name": "message", "type": "str" },
+        { "name": "info", "type": "DnsInfo" }
+      ],
+      "sources": [
+        { "path": "filtering/dns_filter/detection.py", "line": 23, "end_line": 29 }
+      ]
+    },
+    {
+      "id": "burst_bucket",
+      "label": "BurstBucket",
+      "sublabel": "引擎内部热桶（派生状态）",
+      "tag": "filter-state",
+      "row": 0,
+      "col": 1,
+      "width": 260,
+      "attributes": [
+        { "name": "bucket_index", "type": "int", "key": "pk" },
+        { "name": "ingest_count", "type": "int" },
+        { "name": "items", "type": "DnsInfo[]" }
+      ],
+      "sources": [
+        { "path": "filtering/dns_filter/filters.py", "line": 127, "end_line": 128 },
+        { "path": "filtering/dns_filter/filters.py", "line": 158, "end_line": 208 }
+      ]
+    },
+    {
+      "id": "cold_filter",
+      "label": "ColdFilter",
+      "sublabel": "按注册域聚合的淘汰区",
+      "tag": "filter-state",
+      "row": 1,
+      "col": 1,
+      "width": 260,
+      "attributes": [
+        { "name": "registered_domain", "type": "str | None", "key": "pk" },
+        { "name": "items", "type": "DnsInfo[]" }
+      ],
+      "sources": [
+        { "path": "filtering/dns_filter/filters.py", "line": 44, "end_line": 64 }
+      ]
+    },
+    {
+      "id": "filter_stats",
+      "label": "FilterStats",
+      "sublabel": "过滤器瞬时汇总",
+      "tag": "read-model",
+      "row": 0,
+      "col": 2,
+      "width": 250,
+      "attributes": [
+        { "name": "bucket_count", "type": "int" },
+        { "name": "bucket_items", "type": "int" },
+        { "name": "cold_domain_count", "type": "int" },
+        { "name": "cold_items", "type": "int" }
+      ],
+      "sources": [
+        { "path": "filtering/dns_filter/models.py", "line": 76, "end_line": 87 }
+      ]
+    },
+    {
+      "id": "filter_snapshot",
+      "label": "FilterSnapshot",
+      "sublabel": "burst/cold 不可变快照",
+      "tag": "read-model",
+      "row": 1,
+      "col": 2,
+      "width": 270,
+      "attributes": [
+        { "name": "burst", "type": "Map[int, DnsInfo[]]" },
+        { "name": "cold", "type": "Map[str | None, DnsInfo[]]" }
+      ],
+      "sources": [
+        { "path": "filtering/dns_filter/filters.py", "line": 36, "end_line": 41 }
+      ]
+    },
+    {
+      "id": "grouper_stats",
+      "label": "GrouperStats",
+      "sublabel": "分组计数快照",
+      "tag": "run-stats",
+      "row": 0,
+      "col": 3,
+      "width": 250,
+      "attributes": [
+        { "name": "received", "type": "int" },
+        { "name": "accepted", "type": "int" },
+        { "name": "flushed_groups", "type": "int" },
+        { "name": "flushed_infos", "type": "int" }
+      ],
+      "sources": [
+        { "path": "filtering/dns_filter/grouping.py", "line": 28, "end_line": 35 }
+      ]
+    },
+    {
+      "id": "service_stats",
+      "label": "ServiceStats",
+      "sublabel": "一次运行的端到端统计",
+      "tag": "run-stats",
+      "row": 1,
+      "col": 3,
+      "width": 270,
+      "attributes": [
+        { "name": "packets_received", "type": "int" },
+        { "name": "packets_accepted", "type": "int" },
+        { "name": "groups_flushed", "type": "int" },
+        { "name": "infos_extracted", "type": "int" },
+        { "name": "burst_detections", "type": "int" },
+        { "name": "cold_detections", "type": "int" },
+        { "name": "filter", "type": "FilterStats" }
+      ],
+      "sources": [
+        { "path": "filtering/dns_filter/service.py", "line": 39, "end_line": 48 }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "id": "detection_info",
+      "from": "detection",
+      "to": "dns_info",
+      "label": "引用 info",
+      "fromCardinality": "many",
+      "toCardinality": "one",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "burst_items",
+      "from": "burst_bucket",
+      "to": "dns_info",
+      "label": "items[]",
+      "fromCardinality": "one",
+      "toCardinality": "many",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "cold_items",
+      "from": "cold_filter",
+      "to": "dns_info",
+      "label": "items[]",
+      "fromCardinality": "one",
+      "toCardinality": "many",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "snapshot_burst",
+      "from": "filter_snapshot",
+      "to": "burst_bucket",
+      "label": "burst",
+      "fromCardinality": "one",
+      "toCardinality": "many",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "snapshot_cold",
+      "from": "filter_snapshot",
+      "to": "cold_filter",
+      "label": "cold",
+      "fromCardinality": "one",
+      "toCardinality": "many",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "service_filter",
+      "from": "service_stats",
+      "to": "filter_stats",
+      "label": "filter",
+      "fromCardinality": "one",
+      "toCardinality": "one",
+      "fromSide": "top",
+      "toSide": "right"
+    },
+    {
+      "id": "service_grouper",
+      "from": "service_stats",
+      "to": "grouper_stats",
+      "label": "汇总",
+      "fromCardinality": "one",
+      "toCardinality": "one",
+      "identifying": false,
+      "fromSide": "top",
+      "toSide": "bottom"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "这不是 SQL schema",
+      "items": [
+        "当前实现没有数据库表；DnsInfo、Detection、Stats 是 frozen dataclass。",
+        "BurstBucket 是 BurstFilterEngine 的桶字典 + 计数派生视图，不是独立持久化表。",
+        "ColdFilter 与 FilterSnapshot 也是内存态；CSV 只是输出格式。"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "状态变化",
+      "items": [
+        "Packet → DnsInfo：is_valid_dns_packet 通过后，extract_dns_info 生成不可变记录。",
+        "DnsInfo → BurstBucket：按 registered_domain 分组，xxhash32 取模定位桶。",
+        "冲突 → ColdFilter：旧桶或新组被淘汰；桶满时新组丢弃，DnsInfo 本身不变。",
+        "Burst/Cold → Detection：PeriodicDetector 取快照，payload_size > 100 命中。"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "关系读法",
+      "items": [
+        "Detection 多对一引用 DnsInfo；一条记录可被不同检测轮次重复命中。",
+        "FilterSnapshot 一快照包含多个 BurstBucket 与 ColdFilter。",
+        "ServiceStats 汇总 FilterStats，并从 GrouperStats 派生运行计数。"
+      ]
+    }
+  ]
+}
