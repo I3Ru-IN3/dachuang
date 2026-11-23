@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "workflow",
+  "quality": "showcase",
+  "specification": {
+    "path": "C:\\Users\\I3Ru\\dachuang\\.archify\\workflow-burst-cold-pipeline-20261122-173425\\candidate.json",
+    "sha256": "2118d4139925228a25190fd235a76ca09030c51ca9898797caf60abab1ea0a52",
+    "bytes": 4935
+  },
+  "artifact": {
+    "path": "C:\\Users\\I3Ru\\dachuang\\.archify\\workflow-burst-cold-pipeline-20261122-173425\\burst-cold-pipeline.html",
+    "sha256": "e38ab5f4a5c900541d78978ea78d39e9f467239a152ba156ab6265604293fb5d",
+    "bytes": 842625
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "C:\\Users\\I3Ru\\dachuang\\.archify\\workflow-burst-cold-pipeline-20261122-173425\\review-4\\burst-cold-pipeline.finalize.json",
+    "summaryReceipt": "C:\\Users\\I3Ru\\dachuang\\.archify\\workflow-burst-cold-pipeline-20261122-173425\\review-4\\burst-cold-pipeline.finalize-summary.json",
+    "browserCheckReceipt": "C:\\Users\\I3Ru\\dachuang\\.archify\\workflow-burst-cold-pipeline-20261122-173425\\review-4\\burst-cold-pipeline.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-11-22T09:36:20.015Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 2857,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  }
+}

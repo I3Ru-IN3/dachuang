@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "5ed3feba-327b-475d-be60-d68d9591b51e",
+  "status": "current",
+  "command": "deliver",
+  "type": "workflow",
+  "input": "C:\\Users\\I3Ru\\dachuang\\.archify\\workflow-burst-cold-pipeline-20261122-173425\\candidate.json",
+  "output": "C:\\Users\\I3Ru\\dachuang\\.archify\\workflow-burst-cold-pipeline-20261122-173425\\burst-cold-pipeline.html",
+  "specification": {
+    "sha256": "2118d4139925228a25190fd235a76ca09030c51ca9898797caf60abab1ea0a52",
+    "bytes": 4935
+  },
+  "artifact": {
+    "sha256": "e38ab5f4a5c900541d78978ea78d39e9f467239a152ba156ab6265604293fb5d",
+    "bytes": 842625
+  }
+}

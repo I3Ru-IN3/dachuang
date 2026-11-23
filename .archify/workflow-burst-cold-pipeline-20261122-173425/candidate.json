@@ -1,0 +1,190 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "流量抓包、聚合与双层过滤流程",
+    "locale": "zh-CN",
+    "output": ".archify/workflow-burst-cold-pipeline-20261122-173425/burst-cold-pipeline.html",
+    "quality_profile": "showcase",
+    "legend": {
+      "entries": {
+        "frontend": { "label": "入口" },
+        "backend": { "label": "服务 / 抓包" },
+        "messagebus": { "label": "缓冲区" },
+        "security": { "label": "检测器" }
+      }
+    }
+  },
+  "lanes": [
+    { "id": "entry", "label": "入口与编排" },
+    { "id": "flow", "label": "抓包与聚合" },
+    { "id": "burst", "label": "突发层 BurstFilter" },
+    { "id": "cold", "label": "冷层 ColdFilter" }
+  ],
+  "phases": [
+    { "id": "startup", "label": "启动装配", "fromCol": 0, "toCol": 1 },
+    { "id": "collect", "label": "抓包与聚合", "fromCol": 2, "toCol": 3 },
+    { "id": "detect", "label": "定时检测", "fromCol": 4, "toCol": 5, "variant": "emphasis" }
+  ],
+  "mainPath": ["cli", "service", "capture", "grouper", "burst", "cold"],
+  "nodes": [
+    {
+      "id": "cli",
+      "lane": "entry",
+      "col": 0,
+      "type": "frontend",
+      "label": "CLI",
+      "sublabel": "软件入口",
+      "icon": "start",
+      "width": 92
+    },
+    {
+      "id": "service",
+      "lane": "entry",
+      "col": 1,
+      "type": "backend",
+      "label": "Service",
+      "sublabel": "实例化 4 组件 · 启动抓包",
+      "width": 124
+    },
+    {
+      "id": "capture",
+      "lane": "flow",
+      "col": 2,
+      "type": "backend",
+      "label": "Capture",
+      "sublabel": "持续抓取流量",
+      "width": 132
+    },
+    {
+      "id": "grouper",
+      "lane": "flow",
+      "col": 3,
+      "type": "messagebus",
+      "label": "Grouper",
+      "sublabel": "缓冲 · 批量打包",
+      "width": 132
+    },
+    {
+      "id": "burst",
+      "lane": "burst",
+      "col": 4,
+      "type": "messagebus",
+      "label": "BurstFilter",
+      "sublabel": "突发流量缓冲",
+      "width": 132
+    },
+    {
+      "id": "burst_detector",
+      "lane": "burst",
+      "col": 5,
+      "type": "security",
+      "label": "Burst Detector",
+      "sublabel": "命中 → 输出 + 删除",
+      "width": 136
+    },
+    {
+      "id": "cold",
+      "lane": "cold",
+      "col": 4,
+      "type": "messagebus",
+      "label": "ColdFilter",
+      "sublabel": "承接低频项",
+      "width": 120
+    },
+    {
+      "id": "cold_detector",
+      "lane": "cold",
+      "col": 5,
+      "type": "security",
+      "label": "Cold Detector",
+      "sublabel": "命中 → 输出 + 删除",
+      "width": 136
+    }
+  ],
+  "edges": [
+    {
+      "id": "cli-calls-service",
+      "from": "cli",
+      "to": "service",
+      "label": "调用",
+      "variant": "emphasis",
+      "role": "main"
+    },
+    {
+      "id": "service-starts-capture",
+      "from": "service",
+      "to": "capture",
+      "label": "启动抓包",
+      "variant": "emphasis",
+      "role": "main"
+    },
+    {
+      "id": "capture-feeds-grouper",
+      "from": "capture",
+      "to": "grouper",
+      "label": "抓包数据",
+      "variant": "emphasis",
+      "role": "main"
+    },
+    {
+      "id": "grouper-flush",
+      "from": "grouper",
+      "to": "burst",
+      "label": "flush：满 / 超时",
+      "variant": "emphasis",
+      "role": "main"
+    },
+    {
+      "id": "burst-collision",
+      "from": "burst",
+      "to": "cold",
+      "label": "哈希冲突：保留高频，下放低频",
+      "role": "branch"
+    },
+    {
+      "id": "burst-spawns-detector",
+      "from": "burst",
+      "to": "burst_detector",
+      "label": "创建 → 周期扫描",
+      "variant": "dashed",
+      "role": "async"
+    },
+    {
+      "id": "cold-spawns-detector",
+      "from": "cold",
+      "to": "cold_detector",
+      "label": "创建 → 周期扫描",
+      "variant": "dashed",
+      "role": "async"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "实例化关系",
+      "items": [
+        "Service 实例化 Grouper、BurstFilter、ColdFilter、Capture 四个组件。",
+        "BurstFilter 与 ColdFilter 各自实例化 1 个 Detector。",
+        "Service 启动抓包后，抓包数据先进入 Grouper。"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "触发与去向",
+      "items": [
+        "Grouper 缓冲足够大或耗时过长时调用 flush，把批量数据交给 BurstFilter。",
+        "BurstFilter 发生哈希冲突时保留高频项，把低频项下放到 ColdFilter。",
+        "两个 Detector 按周期扫描所属缓冲区；命中即输出，并从过滤器中删除。"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "读图提示",
+      "items": [
+        "实线是数据主路径，虚线是 Detector 的周期扫描。",
+        "输出后该流量即从所属过滤器移除，不再留在缓冲区。"
+      ]
+    }
+  ]
+}
